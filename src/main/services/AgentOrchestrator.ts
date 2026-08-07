@@ -116,22 +116,16 @@ export class AgentOrchestrator extends EventEmitter {
     this.emit('status', task)
 
     try {
-      // Fast path: detect simple tasks and execute directly without planning
+      // Fast path: detect simple tasks and execute directly without planning or CDP
       const simpleAction = this.detectSimpleTask(goal)
       if (simpleAction) {
-        this.log(`⚡ Fast path: ${simpleAction.type} — skipping plan`)
+        this.log(`⚡ Fast path: ${simpleAction.type} — instant execution`)
         task.plan = [goal]
         task.status = 'running'
         this.emit('status', task)
 
         const activeTab = this.tabManager.getActiveTab()
         if (!activeTab) throw new Error('No active tab')
-        const tabId = activeTab.id
-        const webContents = activeTab.view.webContents
-
-        if (!this.cdpController.isAttached(tabId)) {
-          this.cdpController.attach(tabId, webContents)
-        }
 
         await this.setBanner(`executing: ${goal}`)
         this.addAction(task, {
@@ -139,12 +133,20 @@ export class AgentOrchestrator extends EventEmitter {
           description: simpleAction.description || goal,
           status: 'running'
         })
-        const result = await this.cdpController.executeAction(tabId, simpleAction)
-        this.log(`✅ Done: ${result}`)
 
-        // Reveal the tab so user sees the page
-        if (simpleAction.type === 'navigate') {
-          this.tabManager.revealActiveTab()
+        // For navigation: use tabManager directly (instant, no CDP overhead)
+        if (simpleAction.type === 'navigate' && simpleAction.url) {
+          this.tabManager.navigateTab(activeTab.id, simpleAction.url)
+          this.log(`✅ Navigated to ${simpleAction.url}`)
+        } else {
+          // For other actions: use CDP (scroll, screenshot, etc.)
+          const tabId = activeTab.id
+          const webContents = activeTab.view.webContents
+          if (!this.cdpController.isAttached(tabId)) {
+            this.cdpController.attach(tabId, webContents)
+          }
+          const result = await this.cdpController.executeAction(tabId, simpleAction)
+          this.log(`✅ Done: ${result}`)
         }
 
         await this.clearBanner()
@@ -321,7 +323,6 @@ export class AgentOrchestrator extends EventEmitter {
     }
 
     this.log('🔍 Extracting page info...')
-    const domSnapshot = await this.cdpController.getDOMSnapshot(tabId)
     const interactiveElements = await this.cdpController.findInteractiveElements(tabId)
     const pageInfo = await this.cdpController.getPageInfo(tabId)
     this.log(`📄 Page: ${pageInfo.title} (${pageInfo.url})`)
@@ -344,35 +345,21 @@ export class AgentOrchestrator extends EventEmitter {
       // Structured extraction failed, continue without it
     }
 
-    // Only capture screenshot on the FIRST step to avoid sending megabytes of
-    // base64 data to the AI on every step (which makes each step take 30+ seconds).
-    // The AI gets enough context from DOM snapshot + structured info for most steps.
-    let screenshotData: string | null = null
-    const isFirstStep = task.actions.length === 0
-    if (isFirstStep) {
-      try {
-        screenshotData = await this.cdpController.screenshot(tabId)
-      } catch {
-        // Screenshot may fail on certain pages; continue without it
-      }
-    }
+    // Skip screenshots entirely for speed — text context is sufficient
+    const screenshotData: string | null = null
 
     const messages: ChatMessage[] = [
       {
         id: 'exec',
         role: 'user',
-        content: `Current step: "${stepDescription}"
-Current URL: ${pageInfo.url}
-Current page title: ${pageInfo.title}
+        content: `Step: "${stepDescription}"
+URL: ${pageInfo.url} | Title: ${pageInfo.title}
 ${structuredInfo}
 
-Interactive elements on page (use these selectors):
-${interactiveElements.map((el, i) => `${i + 1}. <${el.tag}> ${el.text || el.type} [${el.selector}]`).join('\n')}
+Elements (use these selectors):
+${interactiveElements.slice(0, 50).map((el, i) => `${i + 1}. <${el.tag}> ${el.text || el.type} [${el.selector}]`).join('\n')}
 
-DOM structure (condensed):
-${domSnapshot.substring(0, 2000)}
-
-Execute this step. Return ONLY a JSON action object.`,
+Return ONLY a JSON action object.`,
         timestamp: Date.now()
       }
     ]
