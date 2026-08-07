@@ -24,16 +24,19 @@ export class CDPController {
     return !!webContents && webContents.debugger.isAttached()
   }
 
-  private async sendCommand(tabId: string, method: string, params?: Record<string, unknown>): Promise<unknown> {
+  private async sendCommand(tabId: string, method: string, params?: Record<string, unknown>, timeoutMs: number = 15000): Promise<unknown> {
     const webContents = this.attachedTabs.get(tabId)
     if (!webContents || !webContents.debugger.isAttached()) {
       throw new Error(`Tab ${tabId} does not have debugger attached`)
     }
-    return webContents.debugger.sendCommand(method, params)
+    return Promise.race([
+      webContents.debugger.sendCommand(method, params),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms`)), timeoutMs))
+    ])
   }
 
   async navigate(tabId: string, url: string): Promise<void> {
-    await this.sendCommand(tabId, 'Page.navigate', { url })
+    await this.sendCommand(tabId, 'Page.navigate', { url }, 30000)
   }
 
   async click(tabId: string, selector: string): Promise<void> {

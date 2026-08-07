@@ -3,7 +3,7 @@ import { AIClient } from './AIClient'
 import { CDPController } from './CDPController'
 import { ContentExtractor } from './ContentExtractor'
 import { TabManager } from '../tabManager'
-import { AgentTask, AgentAction, AgentPlan, CDPAction, ChatMessage, VisionImage } from '@shared/types'
+import { AgentTask, AgentAction, AgentPlan, CDPAction, ChatMessage } from '@shared/types'
 import crypto from 'crypto'
 
 const PLANNER_SYSTEM_PROMPT = `You are an AI agent that breaks down web browsing goals into concrete, executable steps.
@@ -264,13 +264,16 @@ Execute this step. Return ONLY a JSON action object.`,
 
     await this.setBanner('deciding next move…')
 
-    let response: string
-    if (screenshotData) {
-      const images: VisionImage[] = [{ data: screenshotData, mimeType: 'image/png' }]
-      response = await this.aiClient.sendVisionMessage(messages, images, VISION_EXECUTOR_SYSTEM_PROMPT)
-    } else {
-      response = await this.aiClient.sendMessage(messages, EXECUTOR_SYSTEM_PROMPT)
-    }
+    // Add timeout to prevent hanging forever on slow AI responses
+    const AI_TIMEOUT_MS = 60000 // 60 seconds
+    const aiCall = screenshotData
+      ? this.aiClient.sendVisionMessage(messages, [{ data: screenshotData, mimeType: 'image/png' }], VISION_EXECUTOR_SYSTEM_PROMPT)
+      : this.aiClient.sendMessage(messages, EXECUTOR_SYSTEM_PROMPT)
+
+    const response = await Promise.race([
+      aiCall,
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out after 60s')), AI_TIMEOUT_MS))
+    ])
 
     let action: CDPAction
     try {
