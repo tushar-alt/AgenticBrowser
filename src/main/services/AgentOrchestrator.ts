@@ -116,7 +116,46 @@ export class AgentOrchestrator extends EventEmitter {
     this.emit('status', task)
 
     try {
-      this.log('📋 Planning task...')
+      // Fast path: detect simple tasks and execute directly without planning
+      const simpleAction = this.detectSimpleTask(goal)
+      if (simpleAction) {
+        this.log(`⚡ Fast path: ${simpleAction.type} — skipping plan`)
+        task.plan = [goal]
+        task.status = 'running'
+        this.emit('status', task)
+
+        const activeTab = this.tabManager.getActiveTab()
+        if (!activeTab) throw new Error('No active tab')
+        const tabId = activeTab.id
+        const webContents = activeTab.view.webContents
+
+        if (!this.cdpController.isAttached(tabId)) {
+          this.cdpController.attach(tabId, webContents)
+        }
+
+        await this.setBanner(`executing: ${goal}`)
+        this.addAction(task, {
+          type: simpleAction.type,
+          description: simpleAction.description || goal,
+          status: 'running'
+        })
+        const result = await this.cdpController.executeAction(tabId, simpleAction)
+        this.log(`✅ Done: ${result}`)
+
+        // Reveal the tab so user sees the page
+        if (simpleAction.type === 'navigate') {
+          this.tabManager.revealActiveTab()
+        }
+
+        await this.clearBanner()
+        task.status = 'completed'
+        task.endTime = Date.now()
+        this.emit('status', task)
+        return task
+      }
+
+      // Complex task: plan first
+      this.log('📋 Complex task — planning...')
       const plan = await this.planTask(goal)
       this.log(`✅ Plan: ${plan.steps.length} steps`)
       task.plan = plan.steps
@@ -133,6 +172,59 @@ export class AgentOrchestrator extends EventEmitter {
     }
 
     return task
+  }
+
+  /**
+   * Detect simple tasks that can be executed directly without AI planning.
+   * Returns a CDPAction if simple, null if complex (needs planning).
+   */
+  private detectSimpleTask(goal: string): CDPAction | null {
+    const lower = goal.toLowerCase().trim()
+
+    // URL navigation: "open youtube", "go to github.com", "navigate to X"
+    const urlMatch = lower.match(/^(?:open|go to|navigate to|visit|load)\s+(.+)/)
+    if (urlMatch) {
+      let url = urlMatch[1].trim()
+      // Clean up common prefixes
+      url = url.replace(/^(the\s+|website\s+|page\s+|site\s+)/, '')
+      // If it looks like a domain, add https://
+      if (!url.startsWith('http')) {
+        if (url.includes('.') && !url.includes(' ')) {
+          url = `https://${url}`
+        } else {
+          url = `https://www.google.com/search?q=${encodeURIComponent(url)}`
+        }
+      }
+      return { type: 'navigate', url, description: `Navigate to ${url}` }
+    }
+
+    // Direct URL: just a URL by itself
+    if (lower.match(/^https?:\/\//)) {
+      return { type: 'navigate', url: goal.trim(), description: `Navigate to ${goal.trim()}` }
+    }
+
+    // Search: "search for X on Y" or "search X"
+    const searchMatch = lower.match(/^(?:search|google|look up|find)\s+(?:for\s+)?(.+)/)
+    if (searchMatch) {
+      const query = searchMatch[1].trim()
+      return { type: 'navigate', url: `https://www.google.com/search?q=${encodeURIComponent(query)}`, description: `Search for ${query}` }
+    }
+
+    // Scroll: "scroll down", "scroll up"
+    if (lower === 'scroll down' || lower === 'scroll down a bit') {
+      return { type: 'scroll', options: { direction: 'down', amount: 500 }, description: 'Scroll down' }
+    }
+    if (lower === 'scroll up' || lower === 'scroll up a bit') {
+      return { type: 'scroll', options: { direction: 'up', amount: 500 }, description: 'Scroll up' }
+    }
+
+    // Screenshot: "take a screenshot", "screenshot"
+    if (lower.match(/^(?:take\s+)?(?:a\s+)?screenshot/)) {
+      return { type: 'screenshot', description: 'Take screenshot' }
+    }
+
+    // Not a simple task — needs planning
+    return null
   }
 
   private async planTask(goal: string): Promise<AgentPlan> {

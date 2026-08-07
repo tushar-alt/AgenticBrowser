@@ -111,6 +111,7 @@ export interface CDPAction {
   url?: string
   code?: string
   options?: Record<string, unknown>
+  description?: string
 }
 
 export interface MCPTool {
