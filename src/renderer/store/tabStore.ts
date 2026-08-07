@@ -29,38 +29,38 @@ export const useTabStore = create<TabStore>((set, get) => ({
   },
 
   createTab: async (url?: string) => {
-    await window.api.tabs.create(url)
+    await window.api?.tabs?.create(url)
   },
 
   closeTab: async (tabId: string) => {
-    await window.api.tabs.close(tabId)
+    await window.api?.tabs?.close(tabId)
   },
 
   switchTab: async (tabId: string) => {
-    await window.api.tabs.switch(tabId)
+    await window.api?.tabs?.switch(tabId)
   },
 
   navigateTab: async (tabId: string, url: string) => {
-    await window.api.tabs.navigate(tabId, url)
+    await window.api?.tabs?.navigate(tabId, url)
   },
 
   reloadTab: async (tabId: string) => {
-    await window.api.tabs.reload(tabId)
+    await window.api?.tabs?.reload(tabId)
   },
 
   goBack: async (tabId: string) => {
-    await window.api.tabs.back(tabId)
+    await window.api?.tabs?.back(tabId)
   },
 
   goForward: async (tabId: string) => {
-    await window.api.tabs.forward(tabId)
+    await window.api?.tabs?.forward(tabId)
   },
 
   stopTab: async (tabId: string) => {
-    await window.api.tabs.stop(tabId)
+    await window.api?.tabs?.stop(tabId)
   },
 
   moveTab: async (fromIndex: number, toIndex: number) => {
-    await window.api.tabs.moved(fromIndex, toIndex)
+    await window.api?.tabs?.moved(fromIndex, toIndex)
   }
 }))

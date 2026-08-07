@@ -47,7 +47,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   loadHistory: async () => {
     try {
-      const entries = await window.api.history.get()
+      const entries = await window.api?.history?.get()
       set({ history: entries })
     } catch {
       // Fallback to localStorage
@@ -72,7 +72,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     })
 
     try {
-      await window.api.history.add(newEntry)
+      await window.api?.history?.add(newEntry)
     } catch {
       // IPC not available, localStorage already saved
     }
@@ -86,7 +86,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     })
 
     try {
-      await window.api.history.remove(id)
+      await window.api?.history?.remove(id)
     } catch {
       // IPC not available
     }
@@ -97,7 +97,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     saveToStorage(HISTORY_STORAGE_KEY, [])
 
     try {
-      await window.api.history.clear()
+      await window.api?.history?.clear()
     } catch {
       // IPC not available
     }
@@ -105,7 +105,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
 
   loadBookmarks: async () => {
     try {
-      const entries = await window.api.bookmarks.get()
+      const entries = await window.api?.bookmarks?.get()
       set({ bookmarks: entries })
     } catch {
       // Fallback to localStorage
@@ -128,7 +128,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     })
 
     try {
-      await window.api.bookmarks.add(newBookmark)
+      await window.api?.bookmarks?.add(newBookmark)
     } catch {
       // IPC not available
     }
@@ -142,7 +142,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     })
 
     try {
-      await window.api.bookmarks.remove(id)
+      await window.api?.bookmarks?.remove(id)
     } catch {
       // IPC not available
     }

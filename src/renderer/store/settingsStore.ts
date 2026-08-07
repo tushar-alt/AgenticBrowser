@@ -46,6 +46,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   closeSettings: () => set({ isOpen: false }),
 
   loadSettings: async () => {
+    if (!window.api?.settings) return
     try {
       const settings = await window.api.settings.get()
       set({ settings: { ...defaultSettings, ...settings } })
@@ -55,6 +56,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   updateSettings: async (partial: Partial<AppSettings>) => {
+    if (!window.api?.settings) return
     try {
       const updated = await window.api.settings.set(partial)
       set((state) => ({ settings: { ...state.settings, ...updated } }))
@@ -65,6 +67,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   testConnection: async () => {
+    if (!window.api?.settings) return
     set({ testResult: null })
     try {
       const result = await window.api.settings.testKey()
@@ -75,6 +78,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   loadKeyStatus: async () => {
+    if (!window.api?.settings) return
     try {
       const status = await window.api.settings.getKeyStatus()
       set({ keyStatus: status })

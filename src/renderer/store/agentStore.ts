@@ -55,34 +55,34 @@ export const useAgentStore = create<AgentStore>((set) => ({
   startAgent: async (goal: string) => {
     set({ actions: [], task: null, approvalRequest: null })
     try {
-      await window.api.agent.start(goal)
+      await window.api?.agent?.start(goal)
     } catch (error) {
       console.error('Failed to start agent:', error)
     }
   },
 
   stopAgent: async () => {
-    await window.api.agent.stop()
+    await window.api?.agent?.stop()
     set({ isRunning: false, isPaused: false })
   },
 
   pauseAgent: async () => {
-    await window.api.agent.pause()
+    await window.api?.agent?.pause()
     set({ isPaused: true })
   },
 
   resumeAgent: async () => {
-    await window.api.agent.resume()
+    await window.api?.agent?.resume()
     set({ isPaused: false })
   },
 
   approveAction: async () => {
-    await window.api.agent.approve()
+    await window.api?.agent?.approve()
     set({ approvalRequest: null })
   },
 
   denyAction: async () => {
-    await window.api.agent.deny()
+    await window.api?.agent?.deny()
     set({ approvalRequest: null })
   }
 }))

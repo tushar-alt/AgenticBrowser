@@ -59,7 +59,7 @@ export default function App(): React.JSX.Element {
 
   // Keep the native tab view from sliding under the Assistant panel.
   useEffect(() => {
-    window.api.layout.setInsets(assistantOpen ? ASSISTANT_PANEL_WIDTH : 0)
+    window.api?.layout?.setInsets(assistantOpen ? ASSISTANT_PANEL_WIDTH : 0)
   }, [assistantOpen])
 
   // Record history entries when the active tab navigates to a new URL
@@ -77,29 +77,31 @@ export default function App(): React.JSX.Element {
   }, [activeTab?.url, activeTab?.title])
 
   useEffect(() => {
+    if (!window.api) return
+
     loadSettings()
     loadKeyStatus()
     loadHistory()
     loadBookmarks()
 
-    const unsubTabs = window.api.tabs.onUpdate((t, activeId) => setTabs(t, activeId))
-    const unsubAgentStatus = window.api.agent.onStatus((task) => setTask(task))
-    const unsubAgentAction = window.api.agent.onActionLog((action) => addAction(action))
-    const unsubApproval = window.api.agent.onRequestApproval((description) => {
+    const unsubTabs = window.api.tabs?.onUpdate((t, activeId) => setTabs(t, activeId))
+    const unsubAgentStatus = window.api.agent?.onStatus((task) => setTask(task))
+    const unsubAgentAction = window.api.agent?.onActionLog((action) => addAction(action))
+    const unsubApproval = window.api.agent?.onRequestApproval((description) => {
       setApprovalRequest(description)
       setAssistantMode('agent')
       setAssistantOpen(true)
     })
-    const unsubCommandPalette = window.api.commandPalette.onToggle(() => {
+    const unsubCommandPalette = window.api.commandPalette?.onToggle(() => {
       setShowCommandPalette((prev) => !prev)
     })
 
     return () => {
-      unsubTabs()
-      unsubAgentStatus()
-      unsubAgentAction()
-      unsubApproval()
-      unsubCommandPalette()
+      unsubTabs?.()
+      unsubAgentStatus?.()
+      unsubAgentAction?.()
+      unsubApproval?.()
+      unsubCommandPalette?.()
     }
   }, [])
 
