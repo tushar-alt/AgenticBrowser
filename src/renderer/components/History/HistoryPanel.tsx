@@ -36,9 +36,9 @@ export function HistoryPanel({ isOpen, onClose, onNavigate }: HistoryPanelProps)
   }, [isOpen])
 
   const filteredHistory = useMemo(() => {
-    if (!searchQuery.trim()) return history
+    if (!searchQuery.trim()) return history || []
     const q = searchQuery.toLowerCase()
-    return history.filter(
+    return (history || []).filter(
       (h) => h.title.toLowerCase().includes(q) || h.url.toLowerCase().includes(q)
     )
   }, [history, searchQuery])
@@ -80,7 +80,7 @@ export function HistoryPanel({ isOpen, onClose, onNavigate }: HistoryPanelProps)
         <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-line flex-shrink-0">
           <Clock size={16} className="text-accent flex-shrink-0" />
           <span className="text-sm font-medium text-cream">History</span>
-          <span className="text-xs text-muted font-mono ml-1">{history.length} entries</span>
+          <span className="text-xs text-muted font-mono ml-1">{(history || []).length} entries</span>
           <button
             onClick={handleClearAll}
             className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted

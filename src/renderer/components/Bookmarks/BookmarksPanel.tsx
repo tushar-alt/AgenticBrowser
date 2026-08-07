@@ -22,14 +22,14 @@ export function BookmarksPanel({ isOpen, onClose, onNavigate }: BookmarksPanelPr
 
   const folders = useMemo(() => {
     const folderSet = new Set<string>()
-    for (const b of bookmarks) {
+    for (const b of bookmarks || []) {
       folderSet.add(b.folder || 'Unsorted')
     }
     return Array.from(folderSet).sort()
   }, [bookmarks])
 
   const filteredBookmarks = useMemo(() => {
-    let filtered = bookmarks
+    let filtered = bookmarks || []
 
     if (selectedFolder) {
       filtered = filtered.filter((b) => (b.folder || 'Unsorted') === selectedFolder)
@@ -61,7 +61,7 @@ export function BookmarksPanel({ isOpen, onClose, onNavigate }: BookmarksPanelPr
         <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-line flex-shrink-0">
           <Star size={16} className="text-accent flex-shrink-0" fill="currentColor" />
           <span className="text-sm font-medium text-cream">Bookmarks</span>
-          <span className="text-xs text-muted font-mono ml-1">{bookmarks.length} saved</span>
+          <span className="text-xs text-muted font-mono ml-1">{(bookmarks || []).length} saved</span>
           <button
             onClick={onClose}
             className="ml-auto p-1.5 rounded-md text-muted hover:text-cream hover:bg-panel-3 transition-colors"
