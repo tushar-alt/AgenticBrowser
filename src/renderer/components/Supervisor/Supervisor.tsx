@@ -1,13 +1,20 @@
-import React, { useEffect, useState } from 'react'
-import { Pause, Play, Square, Check, X, ChevronRight } from 'lucide-react'
+import React, { useEffect, useState, useRef } from 'react'
+import { Pause, Play, Square, Check, X, ChevronRight, Terminal } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 
 export function Supervisor(): React.JSX.Element {
   const {
-    task, isRunning, isPaused, actions, approvalRequest,
+    task, isRunning, isPaused, actions, approvalRequest, debugLog,
     startAgent, stopAgent, pauseAgent, resumeAgent, approveAction, denyAction
   } = useAgentStore()
   const [goalInput, setGoalInput] = useState('')
+  const [showDebug, setShowDebug] = useState(false)
+  const debugEndRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll debug log
+  useEffect(() => {
+    debugEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [debugLog])
 
   // Live elapsed timer while a task is in flight.
   const [now, setNow] = useState(() => Date.now())
@@ -233,6 +240,26 @@ export function Supervisor(): React.JSX.Element {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Debug Log Toggle */}
+        <div className="px-3 py-2 border-t border-line">
+          <button
+            onClick={() => setShowDebug(!showDebug)}
+            className="flex items-center gap-1.5 text-[11px] font-mono text-muted hover:text-cream transition-colors"
+          >
+            <Terminal size={12} />
+            <span>Debug Log</span>
+            <ChevronRight size={10} className={`transition-transform ${showDebug ? 'rotate-90' : ''}`} />
+          </button>
+          {showDebug && debugLog && (
+            <div className="mt-2 p-2 rounded-lg bg-ink border border-line max-h-48 overflow-y-auto">
+              <pre className="text-[10px] font-mono text-muted/80 whitespace-pre-wrap break-all leading-relaxed">
+                {debugLog}
+              </pre>
+              <div ref={debugEndRef} />
+            </div>
+          )}
         </div>
       </div>
     </>

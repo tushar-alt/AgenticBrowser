@@ -7,11 +7,13 @@ interface AgentStore {
   isPaused: boolean
   actions: AgentAction[]
   approvalRequest: string | null
+  debugLog: string
 
   setTask: (task: AgentTask) => void
   addAction: (action: AgentAction) => void
   setApprovalRequest: (description: string | null) => void
   clearApprovalRequest: () => void
+  setDebugLog: (log: string) => void
 
   startAgent: (goal: string) => Promise<void>
   stopAgent: () => Promise<void>
@@ -27,6 +29,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
   isPaused: false,
   actions: [],
   approvalRequest: null,
+  debugLog: '',
 
   setTask: (task) =>
     set({
@@ -51,6 +54,7 @@ export const useAgentStore = create<AgentStore>((set) => ({
 
   setApprovalRequest: (description) => set({ approvalRequest: description }),
   clearApprovalRequest: () => set({ approvalRequest: null }),
+  setDebugLog: (log) => set({ debugLog: log }),
 
   startAgent: async (goal: string) => {
     set({ actions: [], task: null, approvalRequest: null })

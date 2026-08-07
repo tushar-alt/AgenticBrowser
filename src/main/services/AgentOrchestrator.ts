@@ -66,6 +66,13 @@ export class AgentOrchestrator extends EventEmitter {
   private isStopped: boolean = false
   private approvalResolver: ((approved: boolean) => void) | null = null
   private approvalMode: 'always' | 'sensitive' | 'never' = 'sensitive'
+  private debugLog: string[] = []
+
+  private log(msg: string): void {
+    const ts = new Date().toLocaleTimeString()
+    this.debugLog.push(`[${ts}] ${msg}`)
+    this.emit('debug-log', this.debugLog.slice(-50).join('\n'))
+  }
 
   constructor(
     aiClient: AIClient,
@@ -89,6 +96,9 @@ export class AgentOrchestrator extends EventEmitter {
       throw new Error('An agent task is already running')
     }
 
+    this.debugLog = []
+    this.log(`🚀 Starting task: "${goal}"`)
+
     const task: AgentTask = {
       id: crypto.randomUUID(),
       goal,
@@ -106,7 +116,9 @@ export class AgentOrchestrator extends EventEmitter {
     this.emit('status', task)
 
     try {
+      this.log('📋 Planning task...')
       const plan = await this.planTask(goal)
+      this.log(`✅ Plan: ${plan.steps.length} steps`)
       task.plan = plan.steps
       task.status = 'running'
       this.emit('status', task)
@@ -142,8 +154,10 @@ export class AgentOrchestrator extends EventEmitter {
     ]
 
     await this.setBanner('planning your task…')
+    this.log('🤖 AI is planning...')
 
     const response = await this.aiClient.sendMessage(messages, PLANNER_SYSTEM_PROMPT)
+    this.log(`📝 AI response: ${response.substring(0, 200)}...`)
 
     try {
       const jsonMatch = response.match(/\{[\s\S]*\}/)
@@ -203,6 +217,7 @@ export class AgentOrchestrator extends EventEmitter {
   }
 
   private async executeStep(task: AgentTask, stepDescription: string, plan: AgentPlan): Promise<void> {
+    this.log(`▶ Step ${task.currentStep + 1}: ${stepDescription}`)
     const activeTab = this.tabManager.getActiveTab()
     if (!activeTab) throw new Error('No active tab')
 
@@ -213,9 +228,12 @@ export class AgentOrchestrator extends EventEmitter {
       this.cdpController.attach(tabId, webContents)
     }
 
+    this.log('🔍 Extracting page info...')
     const domSnapshot = await this.cdpController.getDOMSnapshot(tabId)
     const interactiveElements = await this.cdpController.findInteractiveElements(tabId)
     const pageInfo = await this.cdpController.getPageInfo(tabId)
+    this.log(`📄 Page: ${pageInfo.title} (${pageInfo.url})`)
+    this.log(`🔘 ${interactiveElements.length} interactive elements found`)
 
     // Get structured page info for better understanding
     let structuredInfo = ''
@@ -234,12 +252,17 @@ export class AgentOrchestrator extends EventEmitter {
       // Structured extraction failed, continue without it
     }
 
-    // Capture screenshot for vision-aware execution
+    // Only capture screenshot on the FIRST step to avoid sending megabytes of
+    // base64 data to the AI on every step (which makes each step take 30+ seconds).
+    // The AI gets enough context from DOM snapshot + structured info for most steps.
     let screenshotData: string | null = null
-    try {
-      screenshotData = await this.cdpController.screenshot(tabId)
-    } catch {
-      // Screenshot may fail on certain pages; continue without it
+    const isFirstStep = task.actions.length === 0
+    if (isFirstStep) {
+      try {
+        screenshotData = await this.cdpController.screenshot(tabId)
+      } catch {
+        // Screenshot may fail on certain pages; continue without it
+      }
     }
 
     const messages: ChatMessage[] = [
@@ -251,11 +274,11 @@ Current URL: ${pageInfo.url}
 Current page title: ${pageInfo.title}
 ${structuredInfo}
 
-Interactive elements on page:
+Interactive elements on page (use these selectors):
 ${interactiveElements.map((el, i) => `${i + 1}. <${el.tag}> ${el.text || el.type} [${el.selector}]`).join('\n')}
 
 DOM structure (condensed):
-${domSnapshot.substring(0, 4000)}
+${domSnapshot.substring(0, 2000)}
 
 Execute this step. Return ONLY a JSON action object.`,
         timestamp: Date.now()
@@ -263,17 +286,19 @@ Execute this step. Return ONLY a JSON action object.`,
     ]
 
     await this.setBanner('deciding next move…')
+    this.log('🤖 AI is deciding action...')
 
     // Add timeout to prevent hanging forever on slow AI responses
-    const AI_TIMEOUT_MS = 60000 // 60 seconds
+    const AI_TIMEOUT_MS = 30000 // 30 seconds
     const aiCall = screenshotData
       ? this.aiClient.sendVisionMessage(messages, [{ data: screenshotData, mimeType: 'image/png' }], VISION_EXECUTOR_SYSTEM_PROMPT)
       : this.aiClient.sendMessage(messages, EXECUTOR_SYSTEM_PROMPT)
 
     const response = await Promise.race([
       aiCall,
-      new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out after 60s')), AI_TIMEOUT_MS))
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), AI_TIMEOUT_MS))
     ])
+    this.log(`🤖 AI response: ${response.substring(0, 150)}`)
 
     let action: CDPAction
     try {
@@ -325,6 +350,7 @@ Execute this step. Return ONLY a JSON action object.`,
       agentAction.status = 'completed'
       agentAction.result = result
       this.emit('action', agentAction)
+      this.log(`✅ Action done: ${result.substring(0, 100)}`)
 
       // When the agent navigates, explicitly reveal the tab's native view
       // so the user sees the page live (the CDP debugger may not trigger

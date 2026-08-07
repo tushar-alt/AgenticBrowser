@@ -43,6 +43,11 @@ const api = {
       const handler = (_event: Electron.IpcRendererEvent, description: string) => callback(description)
       ipcRenderer.on(IPC_CHANNELS.AGENT_REQUEST_APPROVAL, handler)
       return () => { ipcRenderer.removeListener(IPC_CHANNELS.AGENT_REQUEST_APPROVAL, handler) }
+    },
+    onDebugLog: (callback: (log: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, log: string) => callback(log)
+      ipcRenderer.on(IPC_CHANNELS.AGENT_DEBUG_LOG, handler)
+      return () => { ipcRenderer.removeListener(IPC_CHANNELS.AGENT_DEBUG_LOG, handler) }
     }
   },
 

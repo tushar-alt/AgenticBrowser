@@ -29,6 +29,7 @@ export default function App(): React.JSX.Element {
   const setTask = useAgentStore((s) => s.setTask)
   const addAction = useAgentStore((s) => s.addAction)
   const setApprovalRequest = useAgentStore((s) => s.setApprovalRequest)
+  const setDebugLog = useAgentStore((s) => s.setDebugLog)
   const loadSettings = useSettingsStore((s) => s.loadSettings)
   const loadKeyStatus = useSettingsStore((s) => s.loadKeyStatus)
   const addHistoryEntry = useHistoryStore((s) => s.addHistoryEntry)
@@ -92,6 +93,9 @@ export default function App(): React.JSX.Element {
       setAssistantMode('agent')
       setAssistantOpen(true)
     })
+    const unsubDebugLog = window.api.agent?.onDebugLog((log) => {
+      setDebugLog(log)
+    })
     const unsubCommandPalette = window.api.commandPalette?.onToggle(() => {
       setShowCommandPalette((prev) => !prev)
     })
@@ -101,6 +105,7 @@ export default function App(): React.JSX.Element {
       unsubAgentStatus?.()
       unsubAgentAction?.()
       unsubApproval?.()
+      unsubDebugLog?.()
       unsubCommandPalette?.()
     }
   }, [])

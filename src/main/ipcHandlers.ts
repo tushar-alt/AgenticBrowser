@@ -151,6 +151,9 @@ export function setupIPCHandlers(): void {
     agentOrchestrator.on('approval-request', (description: string) => {
       sendToRenderer(IPC_CHANNELS.AGENT_REQUEST_APPROVAL, description)
     })
+    agentOrchestrator.on('debug-log', (log: string) => {
+      sendToRenderer(IPC_CHANNELS.AGENT_DEBUG_LOG, log)
+    })
 
     const task = await agentOrchestrator.startTask(goal)
     return task

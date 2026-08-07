@@ -197,6 +197,9 @@ export const IPC_CHANNELS = {
   // Vision AI
   CHAT_VISION: 'chat:vision',
 
+  // Debug
+  AGENT_DEBUG_LOG: 'agent:debug-log',
+
   // Tab Persistence
   TABS_SAVE: 'tabs:save',
   TABS_RESTORE: 'tabs:restore',
