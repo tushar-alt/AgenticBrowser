@@ -1,0 +1,327 @@
+import { BaseWindow, WebContentsView } from 'electron'
+import crypto from 'crypto'
+import { TabInfo, NEW_TAB_URL } from '@shared/types'
+import { CHROME_HEIGHT } from '@shared/constants'
+
+interface TabEntry {
+  id: string
+  view: WebContentsView
+  info: TabInfo
+}
+
+export class TabManager {
+  private tabs: Map<string, TabEntry> = new Map()
+  private activeTabId: string | null = null
+  private window: BaseWindow
+  private rightInset: number = 0
+  private onTabUpdate: ((tabs: TabInfo[], activeId: string | null) => void) | null = null
+
+  constructor(window: BaseWindow) {
+    this.window = window
+  }
+
+  setTabUpdateCallback(cb: (tabs: TabInfo[], activeId: string | null) => void): void {
+    this.onTabUpdate = cb
+  }
+
+  /** Reserve space on the right (e.g. for the Assistant panel) so the native tab view doesn't cover it. */
+  setRightInset(px: number): void {
+    this.rightInset = Math.max(0, px)
+    this.layoutActiveTab()
+  }
+
+  createTab(url?: string): string {
+    const id = crypto.randomUUID()
+    const isNewTab = !url
+
+    const partition = `persist:tab-${id}`
+    const view = new WebContentsView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        partition,
+        javascript: true,
+        webSecurity: true
+      }
+    })
+
+    const info: TabInfo = {
+      id,
+      title: 'New Tab',
+      url: url || NEW_TAB_URL,
+      favicon: '',
+      isActive: false,
+      isLoading: false,
+      isNewTab,
+      canGoBack: false,
+      canGoForward: false
+    }
+
+    const entry: TabEntry = { id, view, info }
+    this.tabs.set(id, entry)
+
+    this.setupTabEvents(entry)
+
+    this.window.contentView.addChildView(view)
+
+    if (url) {
+      view.webContents.loadURL(url)
+    } else {
+      // New tab: the renderer draws the dashboard, so keep the native view hidden.
+      view.setVisible(false)
+      view.webContents.loadURL(NEW_TAB_URL)
+    }
+
+    this.switchToTab(id)
+    return id
+  }
+
+  private setupTabEvents(entry: TabEntry): void {
+    const { view, info, id } = entry
+
+    view.webContents.on('did-start-navigation', (_event, url, _isInPlace, isMainFrame) => {
+      info.url = view.webContents.getURL()
+      info.isLoading = true
+      // The moment the active tab leaves about:blank — by the user, a link, or
+      // the agent's CDP navigation — it stops being a "new tab": reveal its
+      // native view so the controlled page is actually visible.
+      if (isMainFrame && this.isRealUrl(url) && info.isNewTab) {
+        info.isNewTab = false
+        if (this.activeTabId === id) {
+          view.setVisible(true)
+          this.layoutActiveTab()
+        }
+      }
+      this.emitUpdate()
+    })
+
+    view.webContents.on('did-navigate', (_event, url) => {
+      info.url = view.webContents.getURL()
+      info.isLoading = false
+      info.canGoBack = view.webContents.navigationHistory.canGoBack()
+      info.canGoForward = view.webContents.navigationHistory.canGoForward()
+      if (this.isRealUrl(url) && info.isNewTab) {
+        info.isNewTab = false
+        if (this.activeTabId === id) {
+          view.setVisible(true)
+          this.layoutActiveTab()
+        }
+      }
+      this.emitUpdate()
+    })
+
+    view.webContents.on('page-title-updated', (_event, title) => {
+      info.title = title || 'Untitled'
+      this.emitUpdate()
+    })
+
+    view.webContents.on('did-start-loading', () => {
+      info.isLoading = true
+      this.emitUpdate()
+    })
+
+    view.webContents.on('did-stop-loading', () => {
+      info.isLoading = false
+      this.emitUpdate()
+    })
+
+    view.webContents.on('page-favicon-updated', (_event, favicons) => {
+      if (favicons.length > 0) {
+        info.favicon = favicons[0]
+        this.emitUpdate()
+      }
+    })
+
+    view.webContents.on('render-process-gone', (_event, details) => {
+      console.error(`Tab ${id} render process gone:`, details.reason)
+    })
+
+    view.webContents.setWindowOpenHandler(() => {
+      return { action: 'deny' }
+    })
+  }
+
+  switchToTab(tabId: string): boolean {
+    const entry = this.tabs.get(tabId)
+    if (!entry) return false
+
+    if (this.activeTabId) {
+      const current = this.tabs.get(this.activeTabId)
+      if (current) {
+        current.info.isActive = false
+        current.view.setVisible(false)
+      }
+    }
+
+    entry.info.isActive = true
+    // New tabs render the React dashboard, so their native view stays hidden.
+    entry.view.setVisible(!entry.info.isNewTab)
+    this.activeTabId = tabId
+
+    this.layoutActiveTab()
+    this.emitUpdate()
+    return true
+  }
+
+  closeTab(tabId: string): boolean {
+    const entry = this.tabs.get(tabId)
+    if (!entry) return false
+
+    entry.view.setVisible(false)
+    this.window.contentView.removeChildView(entry.view)
+    entry.view.webContents.close()
+    this.tabs.delete(tabId)
+
+    if (this.activeTabId === tabId) {
+      const remaining = Array.from(this.tabs.keys())
+      if (remaining.length > 0) {
+        this.switchToTab(remaining[remaining.length - 1])
+      } else {
+        this.activeTabId = null
+      }
+    }
+
+    this.emitUpdate()
+    return true
+  }
+
+  navigateTab(tabId: string, url: string): void {
+    const entry = this.tabs.get(tabId)
+    if (!entry) return
+
+    let targetUrl = url
+    if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:')) {
+      if (url.includes('.') && !url.includes(' ')) {
+        targetUrl = `https://${url}`
+      } else {
+        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(url)}`
+      }
+    }
+
+    // Leaving the new-tab dashboard: reveal the native view for the real page.
+    entry.info.isNewTab = false
+    if (this.activeTabId === tabId) {
+      entry.view.setVisible(true)
+      this.layoutActiveTab()
+    }
+
+    entry.view.webContents.loadURL(targetUrl)
+  }
+
+  reloadTab(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry) entry.view.webContents.reload()
+  }
+
+  goBack(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry && entry.view.webContents.navigationHistory.canGoBack()) {
+      entry.view.webContents.navigationHistory.goBack()
+    }
+  }
+
+  goForward(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry && entry.view.webContents.navigationHistory.canGoForward()) {
+      entry.view.webContents.navigationHistory.goForward()
+    }
+  }
+
+  stopTab(tabId: string): void {
+    const entry = this.tabs.get(tabId)
+    if (entry) entry.view.webContents.stop()
+  }
+
+  moveTab(fromIndex: number, toIndex: number): void {
+    const ids = Array.from(this.tabs.keys())
+    if (fromIndex < 0 || fromIndex >= ids.length || toIndex < 0 || toIndex >= ids.length) return
+
+    const [movedId] = ids.splice(fromIndex, 1)
+    ids.splice(toIndex, 0, movedId)
+
+    const reordered = new Map<string, TabEntry>()
+    for (const id of ids) {
+      reordered.set(id, this.tabs.get(id)!)
+    }
+    this.tabs = reordered
+    this.emitUpdate()
+  }
+
+  getTab(tabId: string): TabEntry | undefined {
+    return this.tabs.get(tabId)
+  }
+
+  getActiveTab(): TabEntry | null {
+    if (!this.activeTabId) return null
+    return this.tabs.get(this.activeTabId) || null
+  }
+
+  getActiveTabId(): string | null {
+    return this.activeTabId
+  }
+
+  getTabList(): TabInfo[] {
+    return Array.from(this.tabs.values()).map((t) => ({ ...t.info }))
+  }
+
+  /** A URL that represents a real destination (anything beyond the blank new-tab page). */
+  private isRealUrl(url: string | undefined): boolean {
+    if (!url) return false
+    if (url === 'about:blank') return false
+    if (url.startsWith('about:') || url.startsWith('data:')) return false
+    return true
+  }
+
+  /** Explicitly reveal the active tab's native view if it's still in new-tab state. */
+  revealActiveTab(): void {
+    if (!this.activeTabId) return
+    const entry = this.tabs.get(this.activeTabId)
+    if (!entry) return
+    if (entry.info.isNewTab) {
+      entry.info.isNewTab = false
+      entry.view.setVisible(true)
+      this.layoutActiveTab()
+      this.emitUpdate()
+    }
+  }
+
+  layoutActiveTab(): void {
+    if (!this.activeTabId) return
+    const entry = this.tabs.get(this.activeTabId)
+    if (!entry || entry.info.isNewTab) return
+
+    const bounds = this.window.getContentBounds()
+    entry.view.setBounds({
+      x: 0,
+      y: CHROME_HEIGHT,
+      width: Math.max(0, bounds.width - this.rightInset),
+      height: Math.max(0, bounds.height - CHROME_HEIGHT)
+    })
+  }
+
+  destroyAll(): void {
+    for (const entry of this.tabs.values()) {
+      entry.view.webContents.close()
+    }
+    this.tabs.clear()
+    this.activeTabId = null
+  }
+
+  executeJSInActiveTab(code: string): Promise<unknown> {
+    const active = this.getActiveTab()
+    if (!active) throw new Error('No active tab')
+    return active.view.webContents.executeJavaScript(code)
+  }
+
+  getActiveTabWebContents() {
+    const active = this.getActiveTab()
+    return active?.view.webContents || null
+  }
+
+  private emitUpdate(): void {
+    if (this.onTabUpdate) {
+      this.onTabUpdate(this.getTabList(), this.activeTabId)
+    }
+  }
+}

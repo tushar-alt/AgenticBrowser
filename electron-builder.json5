@@ -1,0 +1,29 @@
+{
+  "appId": "com.agentic.browser",
+  "productName": "AgenticBrowser",
+  "directories": {
+    "buildResources": "resources/build",
+    "output": "dist"
+  },
+  "files": [
+    "out/**/*"
+  ],
+  "mac": {
+    "category": "public.app-category.productivity",
+    "icon": "resources/icons/icon.icns",
+    "target": ["dmg"]
+  },
+  "win": {
+    "icon": "resources/icons/icon.ico",
+    "target": ["nsis"]
+  },
+  "linux": {
+    "icon": "resources/icons/icon.png",
+    "target": ["AppImage", "deb"]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}
