@@ -1,12 +1,17 @@
 import { BaseWindow, WebContentsView, nativeTheme } from 'electron'
 import path from 'path'
+import Store from 'electron-store'
 import { TabManager } from './tabManager'
 import { setupIPCHandlers } from './ipcHandlers'
+import { IPC_CHANNELS } from '@shared/types'
+import { getSettings } from './services/AppSettingsStore'
 import { TAB_STRIP_HEIGHT } from '@shared/constants'
 
 let mainWindow: BaseWindow | null = null
 let tabManager: TabManager | null = null
 let rendererView: WebContentsView | null = null
+
+const lastSessionStore = new Store<{ urls: string[] }>({ name: 'last-session', defaults: { urls: [] } })
 
 export function getMainWindow(): BaseWindow | null {
   return mainWindow
@@ -14,6 +19,10 @@ export function getMainWindow(): BaseWindow | null {
 
 export function getTabManager(): TabManager | null {
   return tabManager
+}
+
+export function getRendererWebContents() {
+  return rendererView?.webContents || null
 }
 
 /** The renderer (React chrome) fills the whole content area; tab views overlay it. */
@@ -61,10 +70,41 @@ export function createMainWindow(): BaseWindow {
 
   tabManager = new TabManager(mainWindow)
 
+  // App shortcuts captured on web pages: tab actions run here, chrome-UI
+  // actions are forwarded to the React renderer (after refocusing it, since
+  // the page owns keyboard focus while visible).
+  tabManager.setShortcutCallback((combo) => {
+    if (combo === 'mod+t') {
+      tabManager!.createTab()
+      return
+    }
+    if (combo === 'mod+w') {
+      const id = tabManager!.getActiveTabId()
+      if (id) tabManager!.closeTab(id)
+      return
+    }
+    if (!rendererView) return
+    rendererView.webContents.focus()
+    rendererView.webContents.send(IPC_CHANNELS.UI_SHORTCUT, combo)
+  })
+
   rendererView.webContents.on('did-finish-load', () => {
     layoutRendererView()
     mainWindow!.show()
-    tabManager!.createTab()
+    const lastUrls = lastSessionStore.get('urls', [])
+    if (getSettings().restoreSession && lastUrls.length > 0) {
+      lastUrls.forEach((u) => tabManager!.createTab(u))
+    } else {
+      tabManager!.createTab()
+    }
+  })
+
+  // Persist open tabs before the window goes away so "continue where you
+  // left off" has something to restore next launch.
+  mainWindow.on('close', () => {
+    try {
+      if (tabManager) lastSessionStore.set('urls', tabManager.getSessionUrls())
+    } catch { /* best effort */ }
   })
 
   mainWindow.on('closed', () => {

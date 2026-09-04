@@ -1,7 +1,81 @@
-import { BaseWindow, WebContentsView } from 'electron'
+import { app, BaseWindow, dialog, session as electronSession, WebContentsView, type Input, type Session } from 'electron'
 import crypto from 'crypto'
+import path from 'path'
 import { TabInfo, NEW_TAB_URL } from '@shared/types'
-import { CHROME_HEIGHT } from '@shared/constants'
+import { CHROME_HEIGHT, buildSearchUrl } from '@shared/constants'
+import { getSettings } from './services/AppSettingsStore'
+import { PasswordVault } from './services/PasswordVault'
+
+/** Normalize a key event to a combo string like "mod+k" / "mod+shift+a"; null when not an app shortcut. */
+function normalizeShortcut(input: Input): string | null {
+  const mod = input.control || input.meta
+  if (!mod) return null
+  const key = input.key.toLowerCase()
+  if (!['k', 'b', 'f', 'h', 'l', 't', 'w'].includes(key)) return null
+  const parts = ['mod']
+  if (input.shift) parts.push('shift')
+  parts.push(key)
+  return parts.join('+')
+}
+
+/** Hook injected into pages: remembers submitted login credentials for the NEXT navigation. */
+const CAPTURE_HOOK = `
+(function () {
+  if (window.__ab_pw_hook) return true;
+  window.__ab_pw_hook = 1;
+  function hook(f) {
+    if (f.__ab_hook) return;
+    f.__ab_hook = 1;
+    f.addEventListener('submit', function () {
+      try {
+        var pw = f.querySelector('input[type=password]');
+        if (!pw || !pw.value) return;
+        var user = f.querySelector('input[type=email], input[type=text], input[autocomplete*="username"], input[name*="user"], input[name*="email"], input[name*="login"]');
+        sessionStorage.setItem('__ab_save', JSON.stringify({ u: (user && user.value) || '', p: pw.value }));
+      } catch (e) {}
+    }, true);
+  }
+  document.querySelectorAll('form').forEach(hook);
+  new MutationObserver(function () { document.querySelectorAll('form').forEach(hook); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  return true;
+})()
+`
+
+function readCaptureScript(): string {
+  return `
+(function () {
+  try {
+    var v = sessionStorage.getItem('__ab_save');
+    if (v) sessionStorage.removeItem('__ab_save');
+    return v;
+  } catch (e) { return null; }
+})()
+`
+}
+
+function autofillScript(creds: { username: string; password: string }): string {
+  const payload = JSON.stringify(creds)
+  return `
+(function () {
+  try {
+    var creds = ${payload};
+    var pw = document.querySelector('input[type=password]');
+    if (!pw || pw.value) return false;
+    var user = document.querySelector('input[type=email], input[type=text], input[autocomplete*="username"], input[name*="user"], input[name*="email"], input[name*="login"]');
+    if (user && !user.value) {
+      user.value = creds.username;
+      user.dispatchEvent(new Event('input', { bubbles: true }));
+      user.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    pw.value = creds.password;
+    pw.dispatchEvent(new Event('input', { bubbles: true }));
+    pw.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  } catch (e) { return false; }
+})()
+`
+}
 
 interface TabEntry {
   id: string
@@ -14,7 +88,11 @@ export class TabManager {
   private activeTabId: string | null = null
   private window: BaseWindow
   private rightInset: number = 0
+  private overlayActive: boolean = false
   private onTabUpdate: ((tabs: TabInfo[], activeId: string | null) => void) | null = null
+  private onShortcut: ((combo: string) => void) | null = null
+  private vault = new PasswordVault()
+  private configuredSessions = new WeakSet<Session>()
 
   constructor(window: BaseWindow) {
     this.window = window
@@ -24,10 +102,33 @@ export class TabManager {
     this.onTabUpdate = cb
   }
 
+  /**
+   * Web pages own the keyboard while focused, so renderer-side keydown listeners
+   * in the chrome never fire on real sites. Tab views report app shortcuts here
+   * (normalized, e.g. "mod+k", "mod+shift+a") before the page sees them.
+   */
+  setShortcutCallback(cb: (combo: string) => void): void {
+    this.onShortcut = cb
+  }
+
   /** Reserve space on the right (e.g. for the Assistant panel) so the native tab view doesn't cover it. */
   setRightInset(px: number): void {
     this.rightInset = Math.max(0, px)
     this.layoutActiveTab()
+  }
+
+  /**
+   * Modal overlays (command palette, settings, history, bookmarks) are drawn by
+   * the React chrome, which sits UNDER the native tab view. While an overlay is
+   * open the page's native view must step aside, otherwise the overlay is
+   * invisible. Find-in-page is exempt: its highlights live in the page itself.
+   */
+  setOverlayActive(active: boolean): void {
+    this.overlayActive = active
+    const activeEntry = this.getActiveTab()
+    if (!activeEntry) return
+    activeEntry.view.setVisible(active ? false : !activeEntry.info.isNewTab)
+    if (!active) this.layoutActiveTab()
   }
 
   createTab(url?: string): string {
@@ -62,6 +163,7 @@ export class TabManager {
     this.tabs.set(id, entry)
 
     this.setupTabEvents(entry)
+    this.configureSession(view.webContents.session)
 
     this.window.contentView.addChildView(view)
 
@@ -80,6 +182,14 @@ export class TabManager {
   private setupTabEvents(entry: TabEntry): void {
     const { view, info, id } = entry
 
+    view.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || !this.onShortcut) return
+      const combo = normalizeShortcut(input)
+      if (!combo) return
+      event.preventDefault()
+      this.onShortcut(combo)
+    })
+
     view.webContents.on('did-start-navigation', (_event, url, _isInPlace, isMainFrame) => {
       info.url = view.webContents.getURL()
       info.isLoading = true
@@ -89,7 +199,7 @@ export class TabManager {
       if (isMainFrame && this.isRealUrl(url) && info.isNewTab) {
         info.isNewTab = false
         if (this.activeTabId === id) {
-          view.setVisible(true)
+          if (!this.overlayActive) view.setVisible(true)
           this.layoutActiveTab()
         }
       }
@@ -104,11 +214,41 @@ export class TabManager {
       if (this.isRealUrl(url) && info.isNewTab) {
         info.isNewTab = false
         if (this.activeTabId === id) {
-          view.setVisible(true)
+          if (!this.overlayActive) view.setVisible(true)
           this.layoutActiveTab()
         }
       }
       this.emitUpdate()
+
+      // A login form was submitted on the previous page: offer its credentials
+      // to the vault now that we know the login succeeded (navigation happened).
+      void view.webContents
+        .executeJavaScript(readCaptureScript(), true)
+        .then((raw) => {
+          if (!raw || !getSettings().savePasswords) return
+          const data = JSON.parse(String(raw)) as { u?: string; p?: string }
+          const result = this.vault.save(url, String(data.u || ''), String(data.p || ''))
+          if (result === 'saved' || result === 'updated') {
+            PasswordVault.notifySaved(PasswordVault.originOf(url), result)
+          }
+        })
+        .catch(() => { /* not a page we can read */ })
+    })
+
+    view.webContents.on('dom-ready', () => {
+      const settings = getSettings()
+      try {
+        view.webContents.setZoomFactor(settings.defaultZoom)
+      } catch { /* detached */ }
+      if (settings.autoSignin) {
+        const creds = this.vault.findForOrigin(view.webContents.getURL())
+        if (creds) {
+          void view.webContents.executeJavaScript(autofillScript(creds), true).catch(() => {})
+        }
+      }
+      if (settings.savePasswords) {
+        void view.webContents.executeJavaScript(CAPTURE_HOOK, true).catch(() => {})
+      }
     })
 
     view.webContents.on('page-title-updated', (_event, title) => {
@@ -156,7 +296,8 @@ export class TabManager {
 
     entry.info.isActive = true
     // New tabs render the React dashboard, so their native view stays hidden.
-    entry.view.setVisible(!entry.info.isNewTab)
+    // While an overlay is open the page view stays hidden regardless.
+    entry.view.setVisible(this.overlayActive ? false : !entry.info.isNewTab)
     this.activeTabId = tabId
 
     this.layoutActiveTab()
@@ -195,14 +336,15 @@ export class TabManager {
       if (url.includes('.') && !url.includes(' ')) {
         targetUrl = `https://${url}`
       } else {
-        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(url)}`
+        const s = getSettings()
+        targetUrl = buildSearchUrl(s.searchEngine, s.customSearchUrl, url)
       }
     }
 
     // Leaving the new-tab dashboard: reveal the native view for the real page.
     entry.info.isNewTab = false
     if (this.activeTabId === tabId) {
-      entry.view.setVisible(true)
+      if (!this.overlayActive) entry.view.setVisible(true)
       this.layoutActiveTab()
     }
 
@@ -280,7 +422,7 @@ export class TabManager {
     if (!entry) return
     if (entry.info.isNewTab) {
       entry.info.isNewTab = false
-      entry.view.setVisible(true)
+      if (!this.overlayActive) entry.view.setVisible(true)
       this.layoutActiveTab()
       this.emitUpdate()
     }
@@ -317,6 +459,61 @@ export class TabManager {
   getActiveTabWebContents() {
     const active = this.getActiveTab()
     return active?.view.webContents || null
+  }
+
+  /** Per-tab sessions get download handling, DNT and friends exactly once. */
+  private configureSession(ses: Session): void {
+    if (this.configuredSessions.has(ses)) return
+    this.configuredSessions.add(ses)
+
+    ses.on('will-download', (_event, item) => {
+      const settings = getSettings()
+      try {
+        if (settings.askDownloadLocation) {
+          const res = dialog.showSaveDialogSync(this.window, {
+            defaultPath: path.join(settings.downloadPath || app.getPath('downloads'), item.getFilename())
+          })
+          if (!res) {
+            item.cancel()
+            return
+          }
+          item.setSavePath(res)
+        } else {
+          item.setSavePath(path.join(settings.downloadPath || app.getPath('downloads'), item.getFilename()))
+        }
+      } catch { /* fall back to Chromium default handling */ }
+    })
+
+    ses.webRequest.onBeforeSendHeaders((details, callback) => {
+      const requestHeaders = details.requestHeaders
+      if (getSettings().doNotTrack) requestHeaders['DNT'] = '1'
+      callback({ requestHeaders })
+    })
+  }
+
+  async clearBrowsingData(kinds: { cache: boolean; cookies: boolean }): Promise<void> {
+    const sessions = new Set<Session>()
+    for (const entry of this.tabs.values()) sessions.add(entry.view.webContents.session)
+    sessions.add(electronSession.defaultSession)
+    for (const ses of sessions) {
+      if (kinds.cache) await ses.clearCache()
+      if (kinds.cookies) {
+        await ses.clearStorageData({
+          storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage']
+        })
+      }
+    }
+  }
+
+  getPasswordVault(): PasswordVault {
+    return this.vault
+  }
+
+  /** Real (http/https) URLs of open tabs — used for session restore. */
+  getSessionUrls(): string[] {
+    return this.getTabList()
+      .filter((t) => !t.isNewTab && /^https?:\/\//.test(t.url))
+      .map((t) => t.url)
   }
 
   private emitUpdate(): void {

@@ -108,9 +108,12 @@ export function NewTab({ onOpenAssistant }: NewTabProps): React.JSX.Element {
     navigateTab(activeTabId, q)
   }
 
+  // Agent-loop tasks have a single-item plan — track progress by actions executed.
   const progress =
     task && task.plan.length > 0
-      ? Math.min(100, Math.round((task.currentStep / task.plan.length) * 100))
+      ? task.plan.length > 1
+        ? Math.min(100, Math.round((task.currentStep / task.plan.length) * 100))
+        : Math.min(95, task.actions.length * 12)
       : 0
 
   return (

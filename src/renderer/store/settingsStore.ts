@@ -27,7 +27,22 @@ const defaultSettings: AppSettings = {
   showChatPanel: false,
   showSupervisor: false,
   mcpServerEnabled: false,
-  mcpServerPort: 3900
+  mcpServerPort: 3900,
+  searchEngine: 'google',
+  customSearchUrl: '',
+  restoreSession: false,
+  defaultZoom: 1,
+  downloadPath: '',
+  askDownloadLocation: false,
+  doNotTrack: false,
+  savePasswords: true,
+  autoSignin: true
+}
+
+/** Push the theme onto the document so tailwind's CSS variables swap. */
+export function applyTheme(theme: AppSettings['theme']): void {
+  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light'
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -38,7 +53,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     anthropic: false,
     gemini: false,
     ollama: true,
-    custom: false
+    custom: false,
+    zai: false,
+    'claude-oauth': false,
+    'chatgpt-oauth': false
   },
   testResult: null,
 
@@ -50,6 +68,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const settings = await window.api.settings.get()
       set({ settings: { ...defaultSettings, ...settings } })
+      applyTheme(settings.theme || 'dark')
     } catch (error) {
       console.error('Failed to load settings:', error)
     }
@@ -60,6 +79,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     try {
       const updated = await window.api.settings.set(partial)
       set((state) => ({ settings: { ...state.settings, ...updated } }))
+      if (partial.theme) applyTheme(partial.theme)
       await get().loadKeyStatus()
     } catch (error) {
       console.error('Failed to update settings:', error)

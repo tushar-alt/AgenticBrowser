@@ -118,7 +118,7 @@ export function FindInPage({ isOpen, onClose }: FindInPageProps): React.JSX.Elem
     'disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-muted transition-colors'
 
   return (
-    <div className="absolute top-1.5 right-3 z-40 fade-up">
+    <div className="fixed top-[43px] right-3 z-50 fade-up">
       <div
         className="flex items-center gap-1.5 h-9 bg-panel rounded-lg border border-line
                    px-2 shadow-lift"

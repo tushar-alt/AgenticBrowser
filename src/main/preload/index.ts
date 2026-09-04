@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, TabInfo, AppSettings, ChatMessage, AgentTask, AgentAction, PageContext, AIProvider, FindResult, HistoryEntry, Bookmark, Shortcut, Workflow } from '@shared/types'
+import { IPC_CHANNELS, TabInfo, AppSettings, ChatMessage, AgentTask, AgentAction, PageContext, AIProvider, FindResult, HistoryEntry, Bookmark, Shortcut, Workflow, SavedPasswordMeta } from '@shared/types'
 
 const api = {
   tabs: {
@@ -95,8 +95,42 @@ const api = {
     }
   },
 
+  ui: {
+    onShortcut: (callback: (combo: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, combo: string) => callback(combo)
+      ipcRenderer.on(IPC_CHANNELS.UI_SHORTCUT, handler)
+      return () => { ipcRenderer.removeListener(IPC_CHANNELS.UI_SHORTCUT, handler) }
+    }
+  },
+
   layout: {
-    setInsets: (right: number): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.LAYOUT_INSETS, right)
+    setInsets: (right: number): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.LAYOUT_INSETS, right),
+    setOverlay: (active: boolean): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.LAYOUT_OVERLAY, active)
+  },
+
+  passwords: {
+    list: (): Promise<SavedPasswordMeta[]> => ipcRenderer.invoke(IPC_CHANNELS.PASSWORD_LIST),
+    remove: (id: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.PASSWORD_DELETE, id),
+    clear: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.PASSWORD_CLEAR),
+    reveal: (id: string): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.PASSWORD_REVEAL, id)
+  },
+
+  browsingData: {
+    clear: (kinds: { cache: boolean; cookies: boolean }): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.BROWSING_DATA_CLEAR, kinds)
+  },
+
+  downloads: {
+    chooseDir: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_CHOOSE_DOWNLOAD_DIR)
+  },
+
+  oauth: {
+    signIn: (kind: 'claude' | 'chatgpt'): Promise<{ connected: boolean; expiresAt?: number }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OAUTH_START, kind),
+    disconnect: (kind: 'claude' | 'chatgpt'): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OAUTH_DISCONNECT, kind),
+    status: (): Promise<Record<string, { connected: boolean; expiresAt?: number }>> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OAUTH_STATUS)
   },
 
   find: {

@@ -1,35 +1,25 @@
-import { ipcMain, WebContentsView } from 'electron'
+import { ipcMain, nativeTheme, dialog, shell, WebContentsView } from 'electron'
 import { getMainWindow, getTabManager } from './windowManager'
 import { SecureStorage } from './services/SecureStorage'
 import { AIClient } from './services/AIClient'
+import { OAuthAccounts, type OAuthKind } from './services/OAuthAccounts'
 import { CDPController } from './services/CDPController'
 import { AgentOrchestrator } from './services/AgentOrchestrator'
 import { ContentExtractor } from './services/ContentExtractor'
 import { MCPServer } from './services/MCPServer'
+import { getSettings, updateSettings } from './services/AppSettingsStore'
 import Store from 'electron-store'
 import { AppSettings, IPC_CHANNELS, ChatMessage, VisionImage, HistoryEntry, Bookmark } from '@shared/types'
 
 const secureStorage = new SecureStorage()
-const aiClient = new AIClient(secureStorage)
+const oauthAccounts = new OAuthAccounts()
+const aiClient = new AIClient(secureStorage, oauthAccounts)
 const cdpController = new CDPController()
 const contentExtractor = new ContentExtractor()
 let agentOrchestrator: AgentOrchestrator | null = null
 let mcpServer: MCPServer | null = null
 
-const settingsStore: AppSettings = {
-  aiProvider: secureStorage.getActiveProvider(),
-  apiKey: '',
-  baseURL: '',
-  model: '',
-  approvalMode: 'sensitive',
-  maxAgentSteps: 50,
-  agentTimeout: 120000,
-  theme: 'dark',
-  showChatPanel: false,
-  showSupervisor: false,
-  mcpServerEnabled: false,
-  mcpServerPort: 3900
-}
+const settingsStore: AppSettings = getSettings()
 
 const historyStore = new Store<{ history: HistoryEntry[] }>({ name: 'history', defaults: { history: [] } })
 const bookmarkStore = new Store<{ bookmarks: Bookmark[] }>({ name: 'bookmarks', defaults: { bookmarks: [] } })
@@ -107,21 +97,13 @@ export function setupIPCHandlers(): void {
     if (settings.apiKey && settings.aiProvider) {
       secureStorage.saveKey(settings.aiProvider, settings.apiKey, settings.baseURL, settings.model)
     }
-    if (settings.aiProvider) {
-      settingsStore.aiProvider = settings.aiProvider
-      secureStorage.setActiveProvider(settings.aiProvider)
+    delete settings.apiKey
+    if (settings.theme) {
+      nativeTheme.themeSource = settings.theme
     }
-    if (settings.baseURL !== undefined) settingsStore.baseURL = settings.baseURL
-    if (settings.model !== undefined) settingsStore.model = settings.model
-    if (settings.approvalMode) settingsStore.approvalMode = settings.approvalMode
-    if (settings.maxAgentSteps) settingsStore.maxAgentSteps = settings.maxAgentSteps
-    if (settings.agentTimeout) settingsStore.agentTimeout = settings.agentTimeout
-    if (settings.theme) settingsStore.theme = settings.theme
-    if (settings.showChatPanel !== undefined) settingsStore.showChatPanel = settings.showChatPanel
-    if (settings.showSupervisor !== undefined) settingsStore.showSupervisor = settings.showSupervisor
-    if (settings.mcpServerEnabled !== undefined) settingsStore.mcpServerEnabled = settings.mcpServerEnabled
-    if (settings.mcpServerPort) settingsStore.mcpServerPort = settings.mcpServerPort
-
+    // Persist everything the user changed; the local object stays in sync so
+    // other main-process reads (agent, tab sessions) see current values.
+    Object.assign(settingsStore, updateSettings(settings))
     return { ...settingsStore, apiKey: '' }
   })
 
@@ -349,6 +331,11 @@ export function setupIPCHandlers(): void {
     return true
   })
 
+  ipcMain.handle(IPC_CHANNELS.LAYOUT_OVERLAY, (_event, active: boolean) => {
+    tabManager.setOverlayActive(active)
+    return true
+  })
+
   // ── History & Bookmarks ────────────────────────────────────────────────────
 
   ipcMain.handle(IPC_CHANNELS.HISTORY_ADD, (_event, entry: HistoryEntry) => {
@@ -557,15 +544,58 @@ export function setupIPCHandlers(): void {
     return settingsStore.theme
   })
 
-  ipcMain.handle(IPC_CHANNELS.THEME_SET, (_event, theme: 'dark' | 'light') => {
-    settingsStore.theme = theme
-    try {
-      const { nativeTheme } = require('electron')
-      nativeTheme.themeSource = theme
-    } catch {
-      // nativeTheme may not be available in all contexts
-    }
+  ipcMain.handle(IPC_CHANNELS.THEME_SET, (_event, theme: 'dark' | 'light' | 'system') => {
+    Object.assign(settingsStore, updateSettings({ theme }))
+    nativeTheme.themeSource = theme
     sendToRenderer(IPC_CHANNELS.THEME_SET, theme)
     return true
+  })
+
+  // ── Browsing data / downloads / passwords ───────────────────────────────
+
+  ipcMain.handle(IPC_CHANNELS.SETTINGS_CHOOSE_DOWNLOAD_DIR, async () => {
+    const win = getMainWindow()
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    Object.assign(settingsStore, updateSettings({ downloadPath: result.filePaths[0] }))
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle(IPC_CHANNELS.BROWSING_DATA_CLEAR, (_event, kinds: { cache: boolean; cookies: boolean }) => {
+    return tabManager.clearBrowsingData(kinds)
+  })
+
+  // ── Subscription sign-in (OAuth) ─────────────────────────────────────────
+
+  ipcMain.handle(IPC_CHANNELS.OAUTH_START, async (_event, kind: OAuthKind) => {
+    if (kind !== 'claude' && kind !== 'chatgpt') throw new Error(`Unknown sign-in provider: ${kind}`)
+    return oauthAccounts.signIn(kind, (url) => void shell.openExternal(url))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OAUTH_DISCONNECT, (_event, kind: OAuthKind) => {
+    return oauthAccounts.disconnect(kind)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OAUTH_STATUS, () => {
+    return oauthAccounts.statusAll()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PASSWORD_LIST, () => {
+    return tabManager.getPasswordVault().list()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PASSWORD_DELETE, (_event, id: string) => {
+    return tabManager.getPasswordVault().delete(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PASSWORD_CLEAR, () => {
+    tabManager.getPasswordVault().clear()
+    return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PASSWORD_REVEAL, (_event, id: string) => {
+    return tabManager.getPasswordVault().reveal(id)
   })
 }

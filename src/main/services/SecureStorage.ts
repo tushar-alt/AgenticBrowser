@@ -86,7 +86,10 @@ export class SecureStorage {
       anthropic: !!configs.anthropic,
       gemini: !!configs.gemini,
       ollama: true,
-      custom: !!configs.custom
+      custom: !!configs.custom,
+      zai: !!configs.zai,
+      'claude-oauth': false,
+      'chatgpt-oauth': false
     }
   }
 }

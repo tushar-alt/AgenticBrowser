@@ -2,6 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---- Theme tokens (RGB triplets consumed by tailwind.config.js) ---- */
+:root,
+[data-theme='dark'] {
+  --c-ink: 14 14 16;
+  --c-panel: 22 22 25;
+  --c-panel-2: 29 29 33;
+  --c-panel-3: 38 38 43;
+  --c-line: 43 43 49;
+  --c-cream: 242 239 230;
+  --c-muted: 155 154 163;
+  --c-accent: 242 101 34;
+  --c-accent-hover: 255 122 61;
+  --c-agent-running: 62 207 142;
+  --c-agent-paused: 234 179 8;
+  --c-agent-stopped: 239 68 68;
+  --c-agent-idle: 107 114 128;
+}
+
+[data-theme='light'] {
+  --c-ink: 246 245 241;
+  --c-panel: 255 255 255;
+  --c-panel-2: 243 241 235;
+  --c-panel-3: 231 228 220;
+  --c-line: 216 212 201;
+  --c-cream: 28 27 30;
+  --c-muted: 110 109 118;
+  --c-accent: 224 88 20;
+  --c-accent-hover: 242 101 34;
+  --c-agent-running: 22 145 90;
+  --c-agent-paused: 180 120 9;
+  --c-agent-stopped: 220 38 38;
+  --c-agent-idle: 107 114 128;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -15,8 +49,8 @@ body,
   width: 100%;
   overflow: hidden;
   font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  background: #0e0e10;
-  color: #f2efe6;
+  background: rgb(var(--c-ink));
+  color: rgb(var(--c-cream));
   -webkit-font-smoothing: antialiased;
 }
 
@@ -29,13 +63,13 @@ body,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2b2b31;
+  background: rgb(var(--c-line));
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a42;
+  background: rgb(var(--c-muted) / 0.6);
   background-clip: content-box;
 }
 
@@ -63,8 +97,8 @@ select {
   padding-right: 2.2rem;
 }
 select option {
-  background: #1d1d21;
-  color: #f2efe6;
+  background: rgb(var(--c-panel-2));
+  color: rgb(var(--c-cream));
 }
 input[type='number']::-webkit-inner-spin-button,
 input[type='number']::-webkit-outer-spin-button {
@@ -82,13 +116,13 @@ input[type='number']::-webkit-outer-spin-button {
   text-transform: uppercase;
   letter-spacing: 0.18em;
   font-size: 0.65rem;
-  color: #9b9aa3;
+  color: rgb(var(--c-muted));
 }
 
 /* ---- Ambient dashboard background: grid + orange glows ---- */
 .ambient {
   position: relative;
-  background-color: #0e0e10;
+  background-color: rgb(var(--c-ink));
   background-image:
     radial-gradient(60rem 40rem at 12% -10%, rgba(242, 101, 34, 0.12), transparent 60%),
     radial-gradient(50rem 36rem at 100% 0%, rgba(78, 68, 120, 0.1), transparent 55%),

@@ -1,8 +1,12 @@
 import OpenAI from 'openai'
 import Anthropic from '@anthropic-ai/sdk'
 import axios from 'axios'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { AIProviderConfig, ChatMessage, VisionImage } from '@shared/types'
 import { SecureStorage } from './SecureStorage'
+import { OAuthAccounts, type OAuthKind } from './OAuthAccounts'
 
 interface StreamCallbacks {
   onToken: (token: string) => void
@@ -10,30 +14,84 @@ interface StreamCallbacks {
   onError: (error: string) => void
 }
 
+/**
+ * Zero-config fallback: enabled providers from the local ZCode config
+ * (~/.zcode/v2/config.json). Only used when the user has not configured their
+ * own key in Settings. Keys stay local and are never persisted by this app.
+ */
+function loadZCodeFallbackConfigs(): AIProviderConfig[] {
+  const out: AIProviderConfig[] = []
+  try {
+    const file = process.env.ZCODE_CONFIG || path.join(os.homedir(), '.zcode', 'v2', 'config.json')
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      provider?: Record<string, {
+        name?: string
+        kind?: string
+        enabled?: boolean
+        options?: { apiKey?: string; baseURL?: string }
+        models?: Record<string, unknown>
+      }>
+    }
+    for (const p of Object.values(cfg.provider || {})) {
+      if (p?.enabled === false || !p?.options?.apiKey || !p?.options?.baseURL) continue
+      const models = Object.keys(p.models || {})
+      if (models.length === 0) continue
+      out.push({
+        provider: p.kind === 'anthropic' ? 'anthropic' : 'custom',
+        apiKey: p.options.apiKey!,
+        baseURL: p.options.baseURL,
+        model: models.includes('GLM-5.3-Flash') ? 'GLM-5.3-Flash' : models[0]
+      })
+    }
+    out.sort((a, b) => (a.model === 'GLM-5.3-Flash' ? 0 : 1) - (b.model === 'GLM-5.3-Flash' ? 0 : 1))
+  } catch { /* no config -> no fallback */ }
+  return out
+}
+
 export class AIClient {
   private secureStorage: SecureStorage
   private openaiClient: OpenAI | null = null
   private anthropicClient: Anthropic | null = null
+  private anthropicBaseURL: string | null = null
+  private anthropicBearer: boolean = false
+  private oauth: OAuthAccounts
 
-  constructor(secureStorage: SecureStorage) {
+  constructor(secureStorage: SecureStorage, oauth?: OAuthAccounts) {
     this.secureStorage = secureStorage
+    this.oauth = oauth || new OAuthAccounts()
   }
 
-  private getProviderConfig(): AIProviderConfig {
+  private getStoredProviderConfig(): AIProviderConfig | null {
     const provider = this.secureStorage.getActiveProvider()
-    const apiKey = this.secureStorage.getKey()
     const config = this.secureStorage.getConfig()
-
-    if (!apiKey) {
-      throw new Error(`No API key configured for ${provider}. Please add one in Settings.`)
+    // Subscription sign-in providers authenticate via OAuth, not stored keys.
+    if (provider === 'claude-oauth' || provider === 'chatgpt-oauth') {
+      if (!this.oauth.status(provider as OAuthKind).connected) return null
+      return { provider, apiKey: '', model: config?.model }
     }
-
+    const apiKey = this.secureStorage.getKey()
+    if (!apiKey) return null
     return {
       provider,
       apiKey,
       baseURL: config?.baseURL,
       model: config?.model
     }
+  }
+
+  /**
+   * Candidate configs in priority order: the user's own Settings key first,
+   * then local ZCode config providers. Calls iterate until one succeeds so an
+   * expired/invalid fallback credential doesn't break the app.
+   */
+  private getProviderConfigs(): AIProviderConfig[] {
+    const configs: AIProviderConfig[] = []
+    const stored = this.getStoredProviderConfig()
+    if (stored) configs.push(stored)
+    for (const fb of loadZCodeFallbackConfigs()) {
+      configs.push(fb)
+    }
+    return configs
   }
 
   private getOpenAIClient(apiKey: string, baseURL?: string): OpenAI {
@@ -46,9 +104,18 @@ export class AIClient {
     return this.openaiClient
   }
 
-  private getAnthropicClient(apiKey: string): Anthropic {
-    if (!this.anthropicClient || this.anthropicClient.apiKey !== apiKey) {
-      this.anthropicClient = new Anthropic({ apiKey })
+  private getAnthropicClient(apiKey: string, baseURL?: string, bearer = false): Anthropic {
+    if (
+      !this.anthropicClient ||
+      this.anthropicClient.apiKey !== (bearer ? undefined : apiKey) ||
+      this.anthropicBaseURL !== (baseURL || null) ||
+      this.anthropicBearer !== bearer
+    ) {
+      this.anthropicClient = bearer
+        ? new Anthropic({ authToken: apiKey, baseURL: baseURL || undefined })
+        : new Anthropic({ apiKey, baseURL: baseURL || undefined })
+      this.anthropicBaseURL = baseURL || null
+      this.anthropicBearer = bearer
     }
     return this.anthropicClient
   }
@@ -58,8 +125,74 @@ export class AIClient {
     systemPrompt?: string,
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    const config = this.getProviderConfig()
+    const configs = this.getProviderConfigs()
+    if (configs.length === 0) {
+      throw new Error('No AI provider configured. Add an API key in Settings (or install a local ZCode provider).')
+    }
+    let lastErr: unknown = null
+    for (const config of configs) {
+      try {
+        return await this.dispatchMessage(config, messages, systemPrompt, callbacks)
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    throw new Error(
+      `AI request failed on all providers. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+    )
+  }
 
+  async sendVisionMessage(
+    messages: ChatMessage[],
+    images: VisionImage[],
+    systemPrompt?: string,
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    const configs = this.getProviderConfigs()
+    if (configs.length === 0) {
+      throw new Error('No AI provider configured. Please add an API key in Settings.')
+    }
+    let lastErr: unknown = null
+    for (const config of configs) {
+      try {
+        return await this.dispatchVisionMessage(config, messages, images, systemPrompt, callbacks)
+      } catch (e) {
+        lastErr = e
+      }
+    }
+    throw new Error(
+      `Vision request failed on all providers. Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+    )
+  }
+
+  private async dispatchMessage(
+    config: AIProviderConfig,
+    messages: ChatMessage[],
+    systemPrompt?: string,
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    // Subscription sign-ins: OAuth tokens resolve (and refresh) at call time.
+    if (config.provider === 'claude-oauth') {
+      const token = await this.oauth.accessToken('claude')
+      return this.sendAnthropicMessage(
+        { ...config, provider: 'anthropic', apiKey: token, oauthBearer: true, model: config.model || 'claude-sonnet-4-20250514' },
+        messages, systemPrompt, callbacks
+      )
+    }
+    if (config.provider === 'chatgpt-oauth') {
+      const token = await this.oauth.accessToken('chatgpt')
+      return this.sendOpenAIResponses(
+        { ...config, provider: 'openai', apiKey: token, model: config.model || 'gpt-5' },
+        messages, systemPrompt, callbacks
+      )
+    }
+    if (config.provider === 'zai') {
+      // Z.ai GLM Coding Plan: Anthropic-compatible endpoint, plan API key.
+      return this.sendAnthropicMessage(
+        { ...config, provider: 'anthropic', baseURL: config.baseURL || 'https://api.z.ai/api/anthropic', model: config.model || 'glm-4.6' },
+        messages, systemPrompt, callbacks
+      )
+    }
     switch (config.provider) {
       case 'openai':
       case 'custom':
@@ -75,14 +208,29 @@ export class AIClient {
     }
   }
 
-  async sendVisionMessage(
+  private async dispatchVisionMessage(
+    config: AIProviderConfig,
     messages: ChatMessage[],
     images: VisionImage[],
     systemPrompt?: string,
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    const config = this.getProviderConfig()
-
+    if (config.provider === 'claude-oauth') {
+      const token = await this.oauth.accessToken('claude')
+      return this.sendAnthropicVisionMessage(
+        { ...config, provider: 'anthropic', apiKey: token, oauthBearer: true, model: config.model || 'claude-sonnet-4-20250514' },
+        messages, images, systemPrompt, callbacks
+      )
+    }
+    if (config.provider === 'chatgpt-oauth') {
+      throw new Error('Vision is not yet supported for ChatGPT subscription sign-in — use an API key for screenshots.')
+    }
+    if (config.provider === 'zai') {
+      return this.sendAnthropicVisionMessage(
+        { ...config, provider: 'anthropic', baseURL: config.baseURL || 'https://api.z.ai/api/anthropic', model: config.model || 'glm-4.6' },
+        messages, images, systemPrompt, callbacks
+      )
+    }
     switch (config.provider) {
       case 'openai':
       case 'custom':
@@ -153,8 +301,9 @@ export class AIClient {
     systemPrompt?: string,
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    const client = this.getAnthropicClient(config.apiKey)
+    const client = this.getAnthropicClient(config.apiKey, config.baseURL, config.oauthBearer === true)
     const model = config.model || 'claude-sonnet-4-20250514'
+    const extraHeaders = config.oauthBearer ? { 'anthropic-beta': 'oauth-2025-04-20' } : undefined
 
     const formattedMessages: Anthropic.MessageParam[] = messages
       .filter((m) => m.role !== 'system')
@@ -169,7 +318,7 @@ export class AIClient {
         max_tokens: 4096,
         system: systemPrompt || undefined,
         messages: formattedMessages
-      })
+      }, { headers: extraHeaders })
 
       let fullText = ''
       stream.on('text', (text) => {
@@ -187,7 +336,7 @@ export class AIClient {
       max_tokens: 4096,
       system: systemPrompt || undefined,
       messages: formattedMessages
-    })
+    }, { headers: extraHeaders })
 
     const textBlock = response.content.find((b) => b.type === 'text')
     return textBlock ? (textBlock as Anthropic.TextBlock).text : ''
@@ -430,8 +579,9 @@ export class AIClient {
     systemPrompt?: string,
     callbacks?: StreamCallbacks
   ): Promise<string> {
-    const client = this.getAnthropicClient(config.apiKey)
+    const client = this.getAnthropicClient(config.apiKey, config.baseURL, config.oauthBearer === true)
     const model = config.model || 'claude-sonnet-4-20250514'
+    const extraHeaders = config.oauthBearer ? { 'anthropic-beta': 'oauth-2025-04-20' } : undefined
 
     const formattedMessages: Anthropic.MessageParam[] = messages
       .filter((m) => m.role !== 'system')
@@ -464,7 +614,7 @@ export class AIClient {
         max_tokens: 4096,
         system: systemPrompt || undefined,
         messages: formattedMessages
-      })
+      }, { headers: extraHeaders })
 
       let fullText = ''
       stream.on('text', (text) => {
@@ -482,10 +632,105 @@ export class AIClient {
       max_tokens: 4096,
       system: systemPrompt || undefined,
       messages: formattedMessages
-    })
+    }, { headers: extraHeaders })
 
     const textBlock = response.content.find((b) => b.type === 'text')
     return textBlock ? (textBlock as Anthropic.TextBlock).text : ''
+  }
+
+  /**
+   * OpenAI Responses API — the endpoint ChatGPT subscription (OAuth) tokens
+   * are valid for. Falls back to the ChatGPT backend Codex endpoint when the
+   * platform API rejects the account token.
+   */
+  private async sendOpenAIResponses(
+    config: AIProviderConfig,
+    messages: ChatMessage[],
+    systemPrompt?: string,
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    const model = config.model || 'gpt-5'
+    const input = messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }]
+      }))
+    const body = JSON.stringify({
+      model,
+      instructions: systemPrompt || undefined,
+      input,
+      max_output_tokens: 4096,
+      stream: !!callbacks
+    })
+    const endpoints = [
+      'https://api.openai.com/v1/responses',
+      'https://chatgpt.com/backend-api/codex/responses'
+    ]
+    let lastErr = ''
+    for (const url of endpoints) {
+      let res: Response
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.apiKey}`
+          },
+          body
+        })
+      } catch (e) {
+        lastErr = String(e)
+        continue
+      }
+      if (!res.ok) {
+        lastErr = `${res.status}: ${(await res.text()).substring(0, 200)}`
+        // 401/403 → account token not valid here, try the next endpoint
+        if (res.status === 401 || res.status === 403) continue
+        throw new Error(`OpenAI Responses API ${lastErr}`)
+      }
+      if (!callbacks) {
+        const data = (await res.json()) as {
+          output: Array<{ type: string; content?: Array<{ type: string; text?: string }> }>
+        }
+        const texts: string[] = []
+        for (const item of data.output || []) {
+          for (const c of item.content || []) {
+            if (c.type === 'output_text' && c.text) texts.push(c.text)
+          }
+        }
+        return texts.join('')
+      }
+      // SSE streaming
+      let fullText = ''
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      if (reader) {
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue
+            const payload = line.slice(5).trim()
+            if (!payload || payload === '[DONE]') continue
+            try {
+              const evt = JSON.parse(payload) as { type?: string; delta?: string }
+              if (evt.type === 'response.output_text.delta' && evt.delta) {
+                fullText += evt.delta
+                callbacks.onToken(evt.delta)
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+      callbacks.onComplete(fullText)
+      return fullText
+    }
+    throw new Error(`ChatGPT sign-in could not reach the Responses API (${lastErr}).`)
   }
 
   private async sendGeminiVisionMessage(
@@ -677,7 +922,10 @@ export class AIClient {
 
   async testConnection(): Promise<{ success: boolean; message: string; model?: string }> {
     try {
-      const config = this.getProviderConfig()
+      const configs = this.getProviderConfigs()
+      if (configs.length === 0) {
+        return { success: false, message: 'No API key configured. Add one in Settings.' }
+      }
       const testMessages: ChatMessage[] = [
         {
           id: 'test',
@@ -691,7 +939,7 @@ export class AIClient {
       return {
         success: true,
         message: response.trim().substring(0, 100),
-        model: config.model
+        model: configs[0].model
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)

@@ -2,7 +2,77 @@
 
 A privacy-first, open-source agentic browser with AI superpowers. Control the web with natural language, see pages live as the agent works, and keep everything on your machine.
 
+**CLI-first.** Drive the browser entirely from your terminal — every command returns AI-ready JSON, so scripts, agents, and pipelines can consume it directly. The Electron GUI (see below) is optional; the CLI is fully standalone.
+
 > Built with Electron + React + TypeScript. Powered by any AI provider you choose.
+
+## ⌨️ CLI Mode (BrowserOS-style, terminal-first)
+
+```bash
+npm install
+npm run build:cli
+
+# The first command spawns a detached headless Chrome that stays alive across commands
+node dist/cli/index.js open https://news.ycombinator.com   # or: npx agentic open ...
+node dist/cli/index.js info --out page.json                # full page snapshot as JSON
+node dist/cli/index.js click e12                           # click by element ref from the JSON
+node dist/cli/index.js run "find the top 5 stories and list their titles" --steps 10
+node dist/cli/index.js ask "summarize the top story"
+node dist/cli/index.js close-browser
+```
+
+Install it globally if you like: `npm link` → then the command is `agentic` anywhere.
+
+### Commands
+
+| Command | What it does |
+|---------|--------------|
+| `open <url>` | Navigate the active tab; prints full page JSON |
+| `newtab <url>` | Open a URL in a new tab and switch to it |
+| `info [--selector CSS] [--text-limit N]` | AI-ready structured page snapshot (see schema below) |
+| `text [--selector CSS]` | Page text only |
+| `links` / `forms` / `tables` / `images` | Single slices of the page JSON |
+| `click <ref\|css>` | Click by element ref (`e12`) or CSS selector |
+| `type <ref\|css> "<value>"` | Clear + type into an input, fires input/change events |
+| `scroll <up\|down> [px]` | Scroll the page |
+| `screenshot [--file FILE]` | PNG capture |
+| `tabs` / `tab <n>` / `back` / `close [n]` | Tab management |
+| `close-browser` | Quit the background browser |
+| `ask "<question>"` | One-shot LLM Q&A over the current page JSON |
+| `run "<task>" [--steps N]` | Multi-step natural-language agent loop |
+
+### AI-ready page JSON
+
+`open` and `info` emit a single structured object — refs are stable element
+handles the AI can act on (`agentic click e12`):
+
+```json
+{
+  "url": "https://example.com/",
+  "title": "Example Domain",
+  "meta": { "description": "...", "og:title": "..." },
+  "headings": [{ "level": 1, "text": "Example Domain" }],
+  "links": [{ "ref": "e0", "text": "Learn more", "href": "https://iana.org/..." }],
+  "forms": [{ "ref": "e7", "action": "...", "method": "get", "fields": [...] }],
+  "tables": [{ "headers": ["..."], "rows": [["..."]] }],
+  "interactive": [{ "ref": "e8", "tag": "button", "type": "", "text": "Sign up" }],
+  "text": "Readable article text (truncated, article/main-aware)...",
+  "wordCount": 19,
+  "extractedAt": "2026-09-04T18:39:46.456Z"
+}
+```
+
+### Agent configuration (BYOK, zero-telemetry)
+
+The agent resolves an AI provider in this order — everything stays on your machine:
+
+1. `AGENTIC_API_KEY` + `AGENTIC_BASE_URL` (+ optional `AGENTIC_MODEL`, `AGENTIC_STYLE=anthropic|openai`) — any Anthropic- or OpenAI-compatible endpoint
+2. `AGENTIC_PROVIDER=openai|anthropic` with `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+3. **Zero-config**: an enabled provider from your local ZCode config (`~/.zcode/v2/config.json`) is used automatically when present — providers are tried in order and fallback is automatic
+4. Local Ollama (`OLLAMA_HOST`, default `localhost:11434`)
+
+`AGENTIC_VERBOSE=1` prints each agent step's thought and action to stderr.
+No keys are ever written to disk by the CLI.
 
 ## ✨ Features
 
@@ -87,7 +157,8 @@ npm run build:linux   # Linux (AppImage + deb)
 |----------|--------|
 | `Ctrl+T` | New tab |
 | `Ctrl+W` | Close tab |
-| `Ctrl+L` | Focus address bar / Command palette |
+| `Ctrl+K` | Command palette (commands, tabs, history, bookmarks, `>` agent tasks) |
+| `Ctrl+L` | Focus address bar |
 | `Ctrl+B` | Toggle AI chat panel |
 | `Ctrl+Shift+A` | Toggle agent supervisor |
 | `Ctrl+F` | Find in page |
@@ -95,9 +166,18 @@ npm run build:linux   # Linux (AppImage + deb)
 | `Enter` | Navigate to URL or search |
 | `> text` | Run agent task (in command palette or new tab) |
 
+Shortcuts work everywhere — on web pages too (they are captured in the main process and forwarded to the UI).
+
 ## 🏗️ Architecture
 
 ```
+CLI (src/cli — zero extra dependencies, Node >= 22)
+├── index.ts            — command router (open/info/click/type/ask/run/...)
+├── cdp.ts              — CDP WebSocket client + detached headless Chrome launcher
+│                         (persistent session in ~/.agentic-browser/session.json)
+├── pageJson.ts         — AI-ready page → JSON extractor with element refs
+└── agent.ts            — LLM action loop (Anthropic/OpenAI/custom/Ollama/ZCode)
+
 Main Process (Node.js)
 ├── WindowManager       — BaseWindow + renderer WebContentsView
 ├── TabManager          — WebContentsView per tab, visibility management

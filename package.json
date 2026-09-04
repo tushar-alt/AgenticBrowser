@@ -3,11 +3,16 @@
   "version": "1.0.0",
   "description": "Privacy-first agentic browser with BYOK support",
   "main": "./out/main/index.js",
+  "bin": {
+    "agentic": "./dist/cli/index.js"
+  },
   "author": "AgenticBrowser Contributors",
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:cli": "tsc -p tsconfig.cli.json",
+    "cli": "node dist/cli/index.js",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",

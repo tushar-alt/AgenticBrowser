@@ -46,11 +46,21 @@ export function Supervisor(): React.JSX.Element {
     }
   }
 
+  // Agent-loop tasks have a single-item plan, so progress tracks executed actions;
+  // multi-step plans (if reintroduced) keep the step-based calculation.
   const progress = task
-    ? task.plan.length > 0
+    ? task.plan.length > 1
       ? Math.round((task.currentStep / task.plan.length) * 100)
-      : 0
+      : Math.min(95, task.actions.length * 12)
     : 0
+
+  // For single-step plans the goal row stays "in progress" until the task ends.
+  const currentStepForUI =
+    task && task.plan.length > 1
+      ? task.currentStep
+      : task && (task.status === 'completed' || task.status === 'stopped')
+        ? 1
+        : 0
 
   const statusMeta: Record<string, { color: string; label: string }> = {
     idle: { color: 'text-muted', label: 'IDLE' },
@@ -151,6 +161,16 @@ export function Supervisor(): React.JSX.Element {
           </div>
         )}
 
+        {task?.status === 'completed' && task?.summary && (
+          <div className="mx-3 mt-3 p-3 rounded-xl bg-panel-2 border border-agent-running/30 fade-up">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-agent-running" />
+              <span className="term-label text-agent-running">result</span>
+            </div>
+            <p className="text-sm text-cream/90 leading-snug whitespace-pre-wrap break-words">{task.summary}</p>
+          </div>
+        )}
+
         {task?.status === 'stopped' && !task?.error && (
           <div className="mx-3 mt-3 p-3 rounded-xl bg-orange-500/10 border border-orange-500/30 fade-up">
             <div className="term-label text-orange-400 mb-1.5">■ task stopped</div>
@@ -195,17 +215,17 @@ export function Supervisor(): React.JSX.Element {
                 <div
                   key={i}
                   className={`flex items-start gap-2 text-xs py-0.5 ${
-                    i < task.currentStep
+                    i < currentStepForUI
                       ? 'text-agent-running'
-                      : i === task.currentStep
+                      : i === currentStepForUI
                         ? 'text-cream'
                         : 'text-muted/60'
                   }`}
                 >
                   <span className="mt-0.5 flex-shrink-0">
-                    {i < task.currentStep ? '✓' : i === task.currentStep ? <ChevronRight size={12} className="inline text-accent" /> : '·'}
+                    {i < currentStepForUI ? '✓' : i === currentStepForUI ? <ChevronRight size={12} className="inline text-accent" /> : '·'}
                   </span>
-                  <span className={i === task.currentStep ? 'font-medium' : ''}>{step}</span>
+                  <span className={i === currentStepForUI ? 'font-medium' : ''}>{step}</span>
                 </div>
               ))}
             </div>

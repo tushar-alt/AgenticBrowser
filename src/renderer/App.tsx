@@ -22,6 +22,7 @@ export default function App(): React.JSX.Element {
   const [showFindInPage, setShowFindInPage] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
+  const [addressFocusSignal, setAddressFocusSignal] = useState(0)
 
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -38,6 +39,15 @@ export default function App(): React.JSX.Element {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || null
   const prevUrlRef = useRef<string | null>(null)
+  const settingsOpen = useSettingsStore((s) => s.isOpen)
+
+  // Modal overlays drawn by the chrome are invisible under the native page
+  // view, so the page steps aside while one is open. Find-in-page stays
+  // exempt: its match highlights live in the page itself.
+  useEffect(() => {
+    const overlayOpen = showCommandPalette || showHistory || showBookmarks || settingsOpen
+    window.api?.layout?.setOverlay(overlayOpen).catch(() => {})
+  }, [showCommandPalette, showHistory, showBookmarks, settingsOpen])
 
   const openAssistant = (mode: AssistantMode): void => {
     setAssistantMode(mode)
@@ -61,9 +71,7 @@ export default function App(): React.JSX.Element {
   // Keep the native tab view from sliding under the Assistant panel.
   useEffect(() => {
     window.api?.layout?.setInsets(assistantOpen ? ASSISTANT_PANEL_WIDTH : 0)
-  }, [assistantOpen])
-
-  // Record history entries when the active tab navigates to a new URL
+  }, [assistantOpen])  // Record history entries when the active tab navigates to a new URL
   useEffect(() => {
     if (activeTab && !activeTab.isNewTab && activeTab.url && activeTab.url !== 'about:blank') {
       if (activeTab.url !== prevUrlRef.current) {
@@ -110,27 +118,56 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
+  // One place that maps shortcut combos to UI actions. Used both by the
+  // renderer keydown listener (chrome focused) and by forwarded events from
+  // the main process (web page focused — the page owns the keyboard there).
+  const runShortcut = (combo: string): void => {
+    switch (combo) {
+      case 'mod+k':
+        setShowCommandPalette((prev) => !prev)
+        break
+      case 'mod+b':
+        toggleAssistant('chat')
+        break
+      case 'mod+shift+a':
+        toggleAssistant('agent')
+        break
+      case 'mod+f':
+        setShowFindInPage(true)
+        break
+      case 'mod+h':
+        setShowHistory((prev) => !prev)
+        break
+      case 'mod+l':
+        setShowCommandPalette(false)
+        setAddressFocusSignal((n) => n + 1)
+        break
+    }
+  }
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'b') {
-        e.preventDefault()
-        toggleAssistant('chat')
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'A') {
-        e.preventDefault()
-        toggleAssistant('agent')
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'f') {
-        e.preventDefault()
-        setShowFindInPage(true)
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'h') {
-        e.preventDefault()
-        setShowHistory((prev) => !prev)
+      if (e.ctrlKey || e.metaKey) {
+        const key = e.key.toLowerCase()
+        if (key === 'k' || key === 'b' || key === 'f' || key === 'h') {
+          e.preventDefault()
+          runShortcut(e.shiftKey ? `mod+shift+${key}` : `mod+${key}`)
+          return
+        }
+        if (e.shiftKey && key === 'a') {
+          e.preventDefault()
+          runShortcut('mod+shift+a')
+        }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [assistantOpen, assistantMode])
+
+  // Shortcuts forwarded from the main process while a web page has focus.
+  useEffect(() => {
+    if (!window.api?.ui) return
+    return window.api.ui.onShortcut((combo) => runShortcut(combo))
   }, [assistantOpen, assistantMode])
 
   return (
@@ -142,6 +179,7 @@ export default function App(): React.JSX.Element {
 
         <AddressBar
           assistantOpen={assistantOpen}
+          focusSignal={addressFocusSignal}
           onToggleAssistant={() => toggleAssistant(assistantMode)}
         />
 

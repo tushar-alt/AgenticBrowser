@@ -5,25 +5,27 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        ink: '#0e0e10',
+        // Values are RGB triplets defined as CSS variables in styles/index.css
+        // and swapped by [data-theme='light'] for the light theme.
+        ink: 'rgb(var(--c-ink) / <alpha-value>)',
         panel: {
-          DEFAULT: '#161619',
-          2: '#1d1d21',
-          3: '#26262b'
+          DEFAULT: 'rgb(var(--c-panel) / <alpha-value>)',
+          2: 'rgb(var(--c-panel-2) / <alpha-value>)',
+          3: 'rgb(var(--c-panel-3) / <alpha-value>)'
         },
-        line: '#2b2b31',
-        cream: '#f2efe6',
-        muted: '#9b9aa3',
+        line: 'rgb(var(--c-line) / <alpha-value>)',
+        cream: 'rgb(var(--c-cream) / <alpha-value>)',
+        muted: 'rgb(var(--c-muted) / <alpha-value>)',
         accent: {
-          DEFAULT: '#f26522',
-          hover: '#ff7a3d',
-          soft: 'rgba(242, 101, 34, 0.14)'
+          DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
+          hover: 'rgb(var(--c-accent-hover) / <alpha-value>)',
+          soft: 'rgb(var(--c-accent) / 0.14)'
         },
         agent: {
-          running: '#3ecf8e',
-          paused: '#eab308',
-          stopped: '#ef4444',
-          idle: '#6b7280'
+          running: 'rgb(var(--c-agent-running) / <alpha-value>)',
+          paused: 'rgb(var(--c-agent-paused) / <alpha-value>)',
+          stopped: 'rgb(var(--c-agent-stopped) / <alpha-value>)',
+          idle: 'rgb(var(--c-agent-idle) / <alpha-value>)'
         }
       },
       fontFamily: {

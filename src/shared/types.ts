@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
+export type AIProvider = 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'custom' | 'zai' | 'claude-oauth' | 'chatgpt-oauth'
 
 export interface AIKeyConfig {
   provider: AIProvider
@@ -12,6 +12,8 @@ export interface AIProviderConfig {
   apiKey: string
   baseURL?: string
   model?: string
+  /** Anthropic calls authenticate with Bearer token (OAuth) instead of x-api-key. */
+  oauthBearer?: boolean
 }
 
 export interface TabInfo {
@@ -52,6 +54,7 @@ export interface AgentTask {
   startTime: number
   endTime?: number
   error?: string
+  summary?: string
   checkpointData?: string
 }
 
@@ -81,6 +84,9 @@ export interface PageContext {
   screenshot?: string
 }
 
+export type ThemeMode = 'dark' | 'light' | 'system'
+export type SearchEngineId = 'google' | 'bing' | 'duckduckgo' | 'custom'
+
 export interface AppSettings {
   aiProvider: AIProvider
   apiKey: string
@@ -89,11 +95,31 @@ export interface AppSettings {
   approvalMode: 'always' | 'sensitive' | 'never'
   maxAgentSteps: number
   agentTimeout: number
-  theme: 'dark' | 'light'
+  theme: ThemeMode
   showChatPanel: boolean
   showSupervisor: boolean
   mcpServerEnabled: boolean
   mcpServerPort: number
+  /* general */
+  searchEngine: SearchEngineId
+  customSearchUrl: string
+  restoreSession: boolean
+  defaultZoom: number
+  /* downloads */
+  downloadPath: string
+  askDownloadLocation: boolean
+  /* privacy */
+  doNotTrack: boolean
+  /* passwords */
+  savePasswords: boolean
+  autoSignin: boolean
+}
+
+export interface SavedPasswordMeta {
+  id: string
+  origin: string
+  username: string
+  updatedAt: number
 }
 
 export interface AgentPlan {
@@ -170,6 +196,8 @@ export const IPC_CHANNELS = {
   WINDOW_FOCUS: 'window:focus',
   COMMAND_PALETTE_TOGGLE: 'command-palette:toggle',
   LAYOUT_INSETS: 'layout:insets',
+  LAYOUT_OVERLAY: 'layout:overlay',
+  UI_SHORTCUT: 'ui:shortcut',
 
   NAV_URL_CHANGED: 'nav:url-changed',
   NAV_TITLE_CHANGED: 'nav:title-changed',
@@ -200,6 +228,21 @@ export const IPC_CHANNELS = {
 
   // Debug
   AGENT_DEBUG_LOG: 'agent:debug-log',
+
+  // Settings extras
+  SETTINGS_CHOOSE_DOWNLOAD_DIR: 'settings:choose-download-dir',
+  BROWSING_DATA_CLEAR: 'browsing-data:clear',
+
+  // Subscription sign-in (OAuth)
+  OAUTH_START: 'oauth:start',
+  OAUTH_DISCONNECT: 'oauth:disconnect',
+  OAUTH_STATUS: 'oauth:status',
+
+  // Passwords
+  PASSWORD_LIST: 'password:list',
+  PASSWORD_DELETE: 'password:delete',
+  PASSWORD_CLEAR: 'password:clear',
+  PASSWORD_REVEAL: 'password:reveal',
 
   // Tab Persistence
   TABS_SAVE: 'tabs:save',

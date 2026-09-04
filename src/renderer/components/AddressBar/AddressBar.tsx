@@ -3,13 +3,15 @@ import { ArrowLeft, ArrowRight, RotateCw, X, Lock, Sparkles, Settings, Star } fr
 import { useTabStore } from '../../store/tabStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { useHistoryStore } from '../../store/historyStore'
+import { ASSISTANT_PANEL_WIDTH } from '@shared/constants'
 
 interface AddressBarProps {
   assistantOpen: boolean
+  focusSignal: number
   onToggleAssistant: () => void
 }
 
-export function AddressBar({ assistantOpen, onToggleAssistant }: AddressBarProps): React.JSX.Element {
+export function AddressBar({ assistantOpen, focusSignal, onToggleAssistant }: AddressBarProps): React.JSX.Element {
   const { tabs, activeTabId, navigateTab, reloadTab, goBack, goForward, stopTab } = useTabStore()
   const { isBookmarked, addBookmark, removeBookmark, getBookmarkByUrl, loadBookmarks } = useHistoryStore()
   const [inputValue, setInputValue] = useState('')
@@ -27,6 +29,14 @@ export function AddressBar({ assistantOpen, onToggleAssistant }: AddressBarProps
       setInputValue(activeTab && !activeTab.isNewTab && activeTab.url !== 'about:blank' ? activeTab.url : '')
     }
   }, [activeTab?.url, activeTab?.isNewTab, isEditing])
+
+  // Ctrl+L forwarded from the main process (main refocuses the chrome first)
+  useEffect(() => {
+    if (focusSignal > 0) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [focusSignal])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -84,7 +94,11 @@ export function AddressBar({ assistantOpen, onToggleAssistant }: AddressBarProps
     'disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-muted transition-colors'
 
   return (
-    <div className="flex items-center h-12 px-2 bg-panel border-b border-line gap-1 no-drag flex-shrink-0">
+    <div
+      className="flex items-center h-12 px-2 bg-panel border-b border-line gap-1 no-drag flex-shrink-0 transition-[padding] duration-200"
+      style={{ paddingRight: assistantOpen ? ASSISTANT_PANEL_WIDTH : undefined }}
+    >
+
       <button onClick={() => activeTabId && goBack(activeTabId)} disabled={!activeTab?.canGoBack} className={navBtn} title="Back">
         <ArrowLeft size={16} />
       </button>
