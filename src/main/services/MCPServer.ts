@@ -4,6 +4,7 @@ import { ContentExtractor } from './ContentExtractor'
 import { TabManager } from '../tabManager'
 import { MCPTool, MCPToolResult } from '@shared/types'
 import * as http from 'http'
+import crypto from 'crypto'
 
 export class MCPServer extends EventEmitter {
   private server: http.Server | null = null
@@ -12,6 +13,7 @@ export class MCPServer extends EventEmitter {
   private tabManager: TabManager
   private port: number
   private isRunning: boolean = false
+  private token: string = crypto.randomBytes(24).toString('hex')
 
   constructor(
     cdpController: CDPController,
@@ -132,12 +134,24 @@ export class MCPServer extends EventEmitter {
 
     this.server = http.createServer(async (req, res) => {
       res.setHeader('Content-Type', 'application/json')
-      res.setHeader('Access-Control-Allow-Origin', '*')
-      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+      // Local-only hardening: no CORS (local MCP clients don't need it), and
+      // reject requests whose Host isn't this loopback endpoint (DNS rebinding
+      // defense) or that carry a cross-site browser Origin.
+      const host = String(req.headers.host || '')
+      if (!host.startsWith('127.0.0.1:') && !host.startsWith('localhost:')) {
+        res.writeHead(403)
+        res.end(JSON.stringify({ error: 'Forbidden host' }))
+        return
+      }
+      if (req.headers.origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.origin))) {
+        res.writeHead(403)
+        res.end(JSON.stringify({ error: 'Forbidden origin' }))
+        return
+      }
 
       if (req.method === 'OPTIONS') {
-        res.writeHead(200)
+        res.writeHead(405)
         res.end()
         return
       }
@@ -145,6 +159,13 @@ export class MCPServer extends EventEmitter {
       if (req.method !== 'POST') {
         res.writeHead(405)
         res.end(JSON.stringify({ error: 'Method not allowed' }))
+        return
+      }
+
+      const auth = String(req.headers.authorization || '')
+      if (auth !== 'Bearer ' + this.token) {
+        res.writeHead(401)
+        res.end(JSON.stringify({ error: 'Unauthorized - set Authorization: Bearer <token> from Settings' }))
         return
       }
 
@@ -287,7 +308,11 @@ export class MCPServer extends EventEmitter {
     }
   }
 
-  getStatus(): { running: boolean; port: number } {
-    return { running: this.isRunning, port: this.port }
+  getStatus(): { running: boolean; port: number; token?: string } {
+    return {
+      running: this.isRunning,
+      port: this.port,
+      token: this.isRunning ? this.token : undefined
+    }
   }
 }

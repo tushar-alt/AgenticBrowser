@@ -32,6 +32,7 @@ export function SettingsPanel(): React.JSX.Element {
   const [maxSteps, setMaxSteps] = useState(settings.maxAgentSteps)
   const [mcpEnabled, setMcpEnabled] = useState(settings.mcpServerEnabled)
   const [mcpPort, setMcpPort] = useState(settings.mcpServerPort)
+  const [mcpStatus, setMcpStatus] = useState<{ running: boolean; port: number; token?: string } | null>(null)
   const [saved, setSaved] = useState(false)
 
   // Passwords state
@@ -70,6 +71,12 @@ export function SettingsPanel(): React.JSX.Element {
   useEffect(() => {
     if (isOpen) refreshOauth()
   }, [isOpen])
+
+  useEffect(() => {
+    if (isOpen && section === 'advanced') {
+      window.api?.mcp?.getStatus().then(setMcpStatus).catch(() => {})
+    }
+  }, [isOpen, section])
 
   useEffect(() => {
     if (!isOpen) return
@@ -594,6 +601,17 @@ export function SettingsPanel(): React.JSX.Element {
                       onChange={(e) => setMcpPort(parseInt(e.target.value) || 3900)}
                       className={`${field} w-32 font-mono`}
                     />
+                    {mcpStatus?.running && mcpStatus.token && (
+                      <div className="mt-3">
+                        <label className={label}>bearer token (required by MCP clients)</label>
+                        <div className="bg-ink rounded-lg px-3 py-2 text-xs border border-line text-agent-running font-mono break-all">
+                          {mcpStatus.token}
+                        </div>
+                        <p className="text-[11px] text-muted mt-1.5">
+                          Requests without this token are rejected. Binds to 127.0.0.1 only.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 

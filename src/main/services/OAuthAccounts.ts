@@ -160,7 +160,8 @@ export class OAuthAccounts {
         }
         const code = u.searchParams.get('code')
         const error = u.searchParams.get('error')
-        const ok = !error && code
+        const stateOk = u.searchParams.get('state') === state
+        const ok = !error && code && stateOk
         res.writeHead(200, { 'Content-Type': 'text/html' })
         res.end(
           `<body style="font-family:system-ui;background:#0e0e10;color:#f2efe6;display:grid;place-items:center;height:100vh;margin:0">` +
