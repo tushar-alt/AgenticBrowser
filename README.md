@@ -6,6 +6,12 @@ A privacy-first, open-source agentic browser with AI superpowers. Control the we
 
 > Built with Electron + React + TypeScript. Powered by any AI provider you choose.
 
+## 🎬 Watch the intro (36s)
+
+https://github.com/tushar-alt/AgenticBrowser/releases/download/v1.0-intro/video.mp4
+
+*Download: [video.mp4](https://github.com/tushar-alt/AgenticBrowser/releases/download/v1.0-intro/video.mp4) · also on the [releases page](https://github.com/tushar-alt/AgenticBrowser/releases/tag/v1.0-intro)*
+
 ## ⌨️ CLI Mode (BrowserOS-style, terminal-first)
 
 ```bash
