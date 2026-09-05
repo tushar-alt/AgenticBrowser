@@ -6,3 +6,5 @@ out/
 Thumbs.db
 .env
 .env.local
+.zcode/ 
+.commandcode/ 
