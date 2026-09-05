@@ -12,6 +12,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { buildSearchUrl } from '../shared/constants'
 import { CDPSession, waitLoad } from './cdp'
 import { extractionScript, summarizePageJson, type PageJSON } from '../shared/pageJson'
 
@@ -324,9 +325,11 @@ async function executeAction(session: CDPSession, action: Action): Promise<strin
           pw.dispatchEvent(new Event('input', { bubbles: true }));
           pw.dispatchEvent(new Event('change', { bubbles: true }));
           const form = pw.closest('form');
-          if (form) { form.submit(); return 'submitted'; }
-          const btn = document.querySelector('button[type=submit], input[type=submit], button');
+          const btn = form
+            ? form.querySelector('button[type=submit], input[type=submit], button:not([type=reset])')
+            : null;
           if (btn) { btn.click(); return 'submitted via button'; }
+          if (form) { form.submit(); return 'submitted via form'; }
           return 'filled but nothing to submit';
         })()
       `;
@@ -395,6 +398,110 @@ async function executeAction(session: CDPSession, action: Action): Promise<strin
   }
 }
 
+
+/**
+ * Deterministic task flows — the "browser is smart so the model can be dumb"
+ * layer. Common hard tasks (logins, downloads, searches, opens) are executed
+ * by the BROWSER itself with zero model intelligence. If a flow matches, the
+ * task completes no matter how weak the model is; the LLM is skipped entirely.
+ */
+async function runDeterministicFlow(
+  session: CDPSession,
+  task: string
+): Promise<{ summary: string; steps: AgentStep[] } | null> {
+  const steps: AgentStep[] = []
+  const push = (thought: string, type: string, result: string) =>
+    steps.push({ step: steps.length + 1, thought, action: { type }, result, ok: true })
+  const low = task.toLowerCase()
+
+  // ---- LOGIN ----
+  // match on the ORIGINAL task text — lowercasing destroys password casing
+  const loginM = task.match(/log\s?in[\s\S]*?username\s+([^\s]+)[\s\S]*?password\s+([^\s]+)/i)
+  if (loginM) {
+    push('detected login flow', 'login', 'filling credentials + submitting')
+    const r = await executeAction(session, { type: 'login', username: loginM[1], password: loginM[2] })
+    // poll for navigation — slow servers / sleeping dynos can take 10s+
+    let page: { url: string; title: string; text: string } | null = null
+    for (let poll = 0; poll < 10; poll++) {
+      await new Promise((res) => setTimeout(res, 1000))
+      try {
+        const pg = await getPageJson(session, { textLimit: 400 })
+        if (!/login|signin|sign-in/i.test(pg.url)) { page = pg; break }
+        if (/invalid|incorrect|wrong/i.test(pg.text)) { page = pg; break }
+        page = pg
+      } catch { /* retry */ }
+    }
+    if (!page) page = await getPageJson(session, { textLimit: 400 }).catch(() => null) as never
+    push('verify', 'info', 'Landed on: ' + page.url + ' — ' + page.title)
+    const loggedIn = !/login|sign in/i.test(page.url) || /secure|welcome|account|dashboard/i.test(page.text + page.title)
+    return {
+      summary: loggedIn
+        ? 'Logged in as ' + loginM[1] + '. Now on ' + page.url + ' — "' + page.title + '".'
+        : 'Login attempted as ' + loginM[1] + ' but the page still shows: ' + page.title + ' (' + page.url + '). The site may have rejected the credentials.',
+      steps
+    }
+  }
+
+  // ---- DOWNLOAD a GitHub repo as zip ----
+  const dlM = task.match(/github\.com\/([\w.-]+)\/([\w.-]+)/i)
+  if (dlM && /download|zip/i.test(low)) {
+    const base = 'https://github.com/' + dlM[1] + '/' + dlM[2]
+    push('detected repo download flow', 'navigate', base)
+    for (const branch of ['main', 'master']) {
+      const url = base + '/archive/refs/heads/' + branch + '.zip'
+      try {
+        const res = await fetch(url)
+        if (!res.ok) continue
+        const buf = Buffer.from(await res.arrayBuffer())
+        // prefer D:\ when present (user preference), then env override, then Downloads
+        const dir = fs.existsSync('D:\\')
+          ? 'D:\\'
+          : process.env.AGENTIC_DOWNLOAD_DIR || path.join(process.env.USERPROFILE || os.homedir(), 'Downloads')
+        fs.mkdirSync(dir, { recursive: true })
+        const file = path.join(dir, dlM[2] + '-' + branch + '.zip')
+        fs.writeFileSync(file, buf)
+        push('download', 'navigate', 'saved ' + file + ' (' + (buf.length / 1024).toFixed(0) + ' KB)')
+        return { summary: 'Downloaded ' + base + ' as "' + file + '" (' + (buf.length / 1024).toFixed(0) + ' KB).', steps }
+      } catch { /* try next branch */ }
+    }
+  }
+
+  // ---- SEARCH ----
+  const sM = low.match(/^(?:search|google|look up)\s+(?:for\s+)?(.+)$/i)
+  if (sM) {
+    push('detected search flow', 'navigate', 'searching: ' + sM[1])
+    // DuckDuckGo's HTML endpoint is reliable for headless sessions (Google CAPTCHAs them)
+    const url = buildSearchUrl(process.env.AGENTIC_ENGINE || 'duckduckgo', '', sM[1])
+    await executeAction(session, { type: 'navigate', url })
+    await new Promise((r) => setTimeout(r, 1500))
+    const page = await getPageJson(session, { textLimit: 900 })
+    push('extract', 'info', page.title)
+    return { summary: 'Search results for "' + sM[1] + '" on ' + page.url + ' — "' + page.title + '". Top of page: ' + page.text.substring(0, 250), steps }
+  }
+
+  // ---- OPEN / NAVIGATE ----
+  const nM = low.match(/^(?:open|go to|visit|navigate to)\s+([\w.-]+\.[a-z]{2,}\S*)$/i)
+      || task.match(/^(?:open|go to|visit|navigate to)\s+(https?:\/\/\S+)$/i)
+  if (nM) {
+    const url = normalizeUrlFlow(nM[1])
+    push('detected open flow', 'navigate', url)
+    await executeAction(session, { type: 'navigate', url })
+    await new Promise((r) => setTimeout(r, 1200))
+    const page = await getPageJson(session, { textLimit: 600 })
+    push('read', 'info', page.title)
+    return { summary: 'Opened ' + page.url + ' — "' + page.title + '". ' + page.text.substring(0, 220), steps }
+  }
+
+  return null
+}
+
+function normalizeUrlFlow(u: string): string {
+  if (/^https?:\/\//i.test(u)) return u
+  if (u.includes('.') && !u.includes(' ')) return 'https://' + u
+  return u
+}
+
+
 export async function runTask(session: CDPSession, task: string, maxSteps = 15): Promise<{ steps: AgentStep[]; summary: string }> {
   const steps: AgentStep[] = []
 
@@ -402,6 +509,15 @@ export async function runTask(session: CDPSession, task: string, maxSteps = 15):
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: 'Task: ' + task + '\n\nFirst, here is the current page:\n' + summarizePageJson(await getPageJson(session, { textLimit: 1500 })) }
   ]
+
+  // Deterministic first: common hard tasks complete with ANY model (or no model)
+  console.error('[flow] trying deterministic flows...')
+  const flow = await runDeterministicFlow(session, task).catch((e) => {
+    console.error('[flow] flow error:', (e as Error).message)
+    return null
+  })
+  console.error('[flow] deterministic result:', flow ? 'COMPLETED' : 'no flow matched')
+  if (flow) return { steps: flow.steps, summary: flow.summary }
 
   let summary = ''
   for (let step = 1; step <= maxSteps; step++) {

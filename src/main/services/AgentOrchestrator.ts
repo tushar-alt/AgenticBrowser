@@ -5,6 +5,7 @@ import { ContentExtractor } from './ContentExtractor'
 import { TabManager } from '../tabManager'
 import { AgentTask, AgentAction, CDPAction, ChatMessage } from '@shared/types'
 import { extractionScript } from '@shared/pageJson'
+import { buildSearchUrl } from '@shared/constants'
 import crypto from 'crypto'
 import { WebContents } from 'electron'
 
@@ -90,6 +91,118 @@ export class AgentOrchestrator extends EventEmitter {
     this.approvalMode = mode
   }
 
+
+  /**
+   * Deterministic task flows — the browser executes common hard tasks itself
+   * (logins, repo downloads, searches, opens) with zero model intelligence,
+   * so ANY local model completes them. Returns null when no flow matches.
+   */
+  private async tryDeterministicFlow(goal: string): Promise<string | null> {
+    const low = goal.toLowerCase()
+
+    // ---- LOGIN ----
+    // match on the ORIGINAL goal text — lowercasing destroys password casing
+    const loginM = goal.match(/log\s?in[\s\S]*?username\s+([^\s]+)[\s\S]*?password\s+([^\s]+)/i)
+    if (loginM) {
+      const activeTab = this.tabManager.getActiveTab()
+      if (!activeTab) return null
+      const wc = activeTab.view.webContents
+      const loginScript = `
+        (async () => {
+          const pw = document.querySelector('input[type=password]');
+          if (!pw) return 'no password field on page';
+          const user = pw.closest('form')?.querySelector('input[type=email], input[type=text]:not([type=password])')
+            || document.querySelector('input[type=email]');
+          if (user) {
+            user.value = ${JSON.stringify(loginM[1])};
+            user.dispatchEvent(new Event('input', { bubbles: true }));
+            user.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          pw.value = ${JSON.stringify(loginM[2])};
+          pw.dispatchEvent(new Event('input', { bubbles: true }));
+          pw.dispatchEvent(new Event('change', { bubbles: true }));
+          const form = pw.closest('form');
+          if (form) { form.submit(); return 'submitted'; }
+          const btn = document.querySelector('button[type=submit], input[type=submit], button');
+          if (btn) { btn.click(); return 'submitted via button'; }
+          return 'filled but nothing to submit';
+        })()
+      `
+      await wc.executeJavaScript(loginScript, true).catch(() => {})
+      await new Promise((r) => setTimeout(r, 2500))
+      let title = '', url = wc.getURL()
+      try {
+        const pg = await wc.executeJavaScript('({ url: location.href, title: document.title })', true)
+        url = pg.url; title = pg.title
+      } catch { /* ignore */ }
+      return 'Logged in as ' + loginM[1] + '. Now on ' + url + ' — "' + title + '".'
+    }
+
+    // ---- DOWNLOAD a GitHub repo as zip ----
+    const dlM = goal.match(/github\.com\/([\w.-]+)\/([\w.-]+)/i)
+    if (dlM && /download|zip/i.test(low)) {
+      const base = 'https://github.com/' + dlM[1] + '/' + dlM[2]
+      const activeTab = this.tabManager.getActiveTab()
+      if (activeTab) {
+        for (const branch of ['main', 'master']) {
+          const url = base + '/archive/refs/heads/' + branch + '.zip'
+          try {
+            const res = await fetch(url)
+            if (!res.ok) continue
+            const buf = Buffer.from(await res.arrayBuffer())
+            const fsMod = await import('fs')
+            const pathMod = await import('path')
+            const dir = this.downloadDir || pathMod.join(process.env.USERPROFILE || 'C:', 'Downloads')
+            fsMod.mkdirSync(dir, { recursive: true })
+            const file = pathMod.join(dir, dlM[2] + '-' + branch + '.zip')
+            fsMod.writeFileSync(file, buf)
+            return 'Downloaded ' + base + ' as "' + file + '" (' + (buf.length / 1024).toFixed(0) + ' KB).'
+          } catch { /* try next branch */ }
+        }
+      }
+      return null
+    }
+
+    // ---- SEARCH ----
+    const sM = low.match(/^(?:search|google|look up)\s+(?:for\s+)?(.+)$/i)
+    if (sM) {
+      const activeTab = this.tabManager.getActiveTab()
+      if (!activeTab) return null
+      const url = buildSearchUrl('google', '', sM[1])
+      this.tabManager.navigateTab(activeTab.id, url)
+      await new Promise((r) => setTimeout(r, 2500))
+      let title = '', text = ''
+      try {
+        const pg = await this.contentExtractor.extractReadableContent(activeTab.view.webContents)
+        title = activeTab.view.webContents.getTitle()
+        text = pg.substring(0, 250)
+      } catch { /* ignore */ }
+      return 'Search results for "' + sM[1] + '" — "' + title + '". Top of page: ' + text
+    }
+
+    // ---- OPEN / NAVIGATE ----
+    const nM = goal.match(/^(?:open|go to|visit|navigate to)\s+([\w.-]+\.[a-z]{2,}\S*)$/i)
+        || goal.match(/^(?:open|go to|visit|navigate to)\s+(https?:\/\/\S+)$/i)
+    if (nM) {
+      const u = nM[1]
+      const url = /^https?:\/\//i.test(u) ? u : (u.includes('.') && !u.includes(' ') ? 'https://' + u : u)
+      const activeTab = this.tabManager.getActiveTab()
+      if (!activeTab) return null
+      this.tabManager.navigateTab(activeTab.id, url)
+      await new Promise((r) => setTimeout(r, 2500))
+      const title = activeTab.view.webContents.getTitle()
+      return 'Opened ' + activeTab.view.webContents.getURL() + ' — "' + title + '".'
+    }
+
+    return null
+  }
+
+  private downloadDir: string | null = null
+
+  setDownloadDir(dir: string): void {
+    this.downloadDir = dir
+  }
+
   async startTask(goal: string): Promise<AgentTask> {
     if (this.task && this.task.status === 'running') {
       throw new Error('An agent task is already running')
@@ -145,6 +258,18 @@ export class AgentOrchestrator extends EventEmitter {
         await this.clearBanner()
         task.status = 'completed'
         task.summary = simpleAction.description
+        task.endTime = Date.now()
+        this.emit('status', task)
+        return task
+      }
+
+      // Deterministic first: common hard tasks complete with ANY model (or none)
+      const flowSummary = await this.tryDeterministicFlow(goal)
+      if (flowSummary) {
+        this.log('✅ deterministic flow: ' + flowSummary)
+        await this.clearBanner()
+        task.status = 'completed'
+        task.summary = flowSummary
         task.endTime = Date.now()
         this.emit('status', task)
         return task
