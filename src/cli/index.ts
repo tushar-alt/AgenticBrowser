@@ -67,7 +67,7 @@ function out(data: unknown, flags: ParsedArgs['flags']): void {
   const file = typeof flags.out === 'string' ? flags.out : ''
   if (file) {
     fs.writeFileSync(file, json)
-    console.error(`written to ${file}`)
+    console.error(`written to ${file}`) // stderr: piping-safe
   } else {
     console.log(json)
   }
@@ -173,7 +173,7 @@ async function main(): Promise<void> {
         await session.send('Page.navigate', { url }, 45000)
         await waitLoad(session)
         const page = await getPageJson(session)
-        console.error('navigated: ' + page.title)
+        // JSON-only stdout: title already in the emitted page JSON
         out(page, flags)
         break
       }
@@ -189,7 +189,7 @@ async function main(): Promise<void> {
         sessionInfo = fresh.sessionInfo
         await waitLoad(session)
         const page = await getPageJson(session)
-        console.error('new tab #' + idx + ': ' + page.title)
+        // JSON-only stdout
         out(page, flags)
         break
       }
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
         await session.evaluate(clickScript(selector))
         await new Promise((r) => setTimeout(r, 800))
         const page = await getPageJson(session, { textLimit: 1200 })
-        console.error('clicked ' + args[0])
+        // JSON-only stdout
         out(page, flags)
         break
       }
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
         const value = args.slice(1).join(' ')
         if (!ref || !value) die('usage: agentic type <ref|css-selector> "<value>"')
         await session.evaluate(typeScript(refToSelector(ref), value))
-        console.error('typed into ' + ref)
+        // JSON-only stdout
         out({ ok: true, ref, value }, flags)
         break
       }
@@ -281,8 +281,7 @@ async function main(): Promise<void> {
         const q = args.join(' ')
         if (!q) die('usage: agentic ask "<question>"')
         const answer = await askPage(session, q)
-        if (flags.json === true) out({ answer }, flags)
-        else console.log(answer)
+        out({ answer }, flags) // JSON-only stdout
         break
       }
       case 'run': {
@@ -290,13 +289,7 @@ async function main(): Promise<void> {
         if (!task) die('usage: agentic run "<task>"')
         const steps = flags.steps ? Number(flags.steps) : 15
         const result = await runTask(session, task, steps)
-        if (flags.json === true) out(result, flags)
-        else {
-          for (const s of result.steps) {
-            console.log(`[${s.step}] ${s.thought || s.action.type}: ${s.result.split('\n')[0].substring(0, 120)}`)
-          }
-          console.log('\n' + result.summary)
-        }
+        out(result, flags) // JSON-only stdout
         break
       }
       default:

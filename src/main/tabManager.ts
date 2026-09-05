@@ -135,7 +135,10 @@ export class TabManager {
     const id = crypto.randomUUID()
     const isNewTab = !url
 
-    const partition = `persist:tab-${id}`
+    // ONE shared persistent session for all tabs — Chrome-style cookie/cache
+    // sharing lets Chromium reuse renderer processes and cached resources
+    // instead of paying a full process + storage partition per tab.
+    const partition = 'persist:app'
     const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
@@ -143,8 +146,12 @@ export class TabManager {
         sandbox: true,
         partition,
         javascript: true,
-        webSecurity: true
-      }
+        webSecurity: true,
+        // Enable shipping-but-not-default web platform features so modern
+        // site CSS/JS parses exactly like stable Chrome.
+        experimentalFeatures: true,
+        backgroundThrottling: true
+      },
     })
 
     const info: TabInfo = {
@@ -161,6 +168,10 @@ export class TabManager {
 
     const entry: TabEntry = { id, view, info }
     this.tabs.set(id, entry)
+
+    // White page canvas: prevents black/transparent paint flashes while a
+    // site loads and avoids compositor glitches on layered views.
+    view.setBackgroundColor('#ffffff')
 
     this.setupTabEvents(entry)
     this.configureSession(view.webContents.session)
@@ -465,6 +476,16 @@ export class TabManager {
   private configureSession(ses: Session): void {
     if (this.configuredSessions.has(ses)) return
     this.configuredSessions.add(ses)
+
+    // Sites sniff the UA and serve Electron a degraded/no-CSS experience.
+    // Present the stock Chrome UA (same engine) for full-fidelity pages.
+    const ua = ses.getUserAgent()
+    const chromeUa = ua
+      .replace(/\s*agentic-browser\/[\d.]+/i, '')
+      .replace(/\s*Electron\/[\d.]+/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    ses.setUserAgent(chromeUa)
 
     ses.on('will-download', (_event, item) => {
       const settings = getSettings()

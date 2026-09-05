@@ -2,7 +2,7 @@
 
 A privacy-first, open-source agentic browser with AI superpowers. Control the web with natural language, see pages live as the agent works, and keep everything on your machine.
 
-**CLI-first.** Drive the browser entirely from your terminal — every command returns AI-ready JSON, so scripts, agents, and pipelines can consume it directly. The Electron GUI (see below) is optional; the CLI is fully standalone.
+**CLI-first.** Drive the browser entirely from your terminal — every command emits **pure JSON on stdout** (progress/errors go to stderr), so it pipes straight into `jq`, agents, or CI. The Electron GUI (see below) is optional; the CLI is fully standalone.
 
 > Built with Electron + React + TypeScript. Powered by any AI provider you choose.
 
