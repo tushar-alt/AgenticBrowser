@@ -69,6 +69,10 @@ export class AIClient {
       if (!this.oauth.status(provider as OAuthKind).connected) return null
       return { provider, apiKey: '', model: config?.model }
     }
+    // Local Ollama needs no API key either
+    if (provider === 'ollama') {
+      return { provider, apiKey: '', baseURL: config?.baseURL || 'http://localhost:11434', model: config?.model || 'tinyllama:1.1b' }
+    }
     const apiKey = this.secureStorage.getKey()
     if (!apiKey) return null
     return {

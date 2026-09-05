@@ -12,7 +12,7 @@ export const DEFAULT_AI_MODELS: Record<string, string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
   gemini: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'],
-  ollama: ['llama3.1', 'mistral', 'codellama', 'phi3'],
+  ollama: ['qwen2.5:1.5b', 'tinyllama:1.1b', 'llama3.2:1b', 'llama3.1', 'mistral'],
   custom: [],
   zai: ['glm-4.6', 'glm-5', 'glm-5-turbo', 'glm-5.3'],
   'claude-oauth': ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-haiku-20241022'],

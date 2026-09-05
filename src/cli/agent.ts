@@ -81,6 +81,13 @@ function loadZCodeProviders(): ProviderCfg[] {
 
 function resolveProviderChain(): Array<ProviderCfg & { call: (messages: ChatMessage[]) => Promise<string> }> {
   const chain: Array<ProviderCfg & { call: (messages: ChatMessage[]) => Promise<string> }> = []
+  // Explicit local-model request: route straight to Ollama before anything else
+  if ((process.env.AGENTIC_PROVIDER || '').toLowerCase() === 'ollama') {
+    const base = process.env.OLLAMA_HOST || 'http://localhost:11434';
+    const m = process.env.AGENTIC_MODEL || 'tinyllama:1.1b';
+    chain.push({ name: 'ollama', model: m, style: 'openai', baseURL: base, apiKey: '', call: (msg) => callOllama(base, msg) });
+    return chain;
+  }
   // 1. Explicit custom endpoint (AGENTIC_API_KEY + AGENTIC_BASE_URL [+ AGENTIC_MODEL, AGENTIC_STYLE])
   if (process.env.AGENTIC_API_KEY && process.env.AGENTIC_BASE_URL) {
     const style = (process.env.AGENTIC_STYLE || 'anthropic').toLowerCase() === 'openai' ? 'openai' : 'anthropic'
@@ -180,6 +187,8 @@ async function callOllama(base: string, messages: ChatMessage[]): Promise<string
 }
 
 const SYSTEM_PROMPT = `You are a browser automation agent driving a real Chrome instance over the Chrome DevTools Protocol.
+RESPOND IN EXACTLY THIS SHAPE (copy it):
+{"thought":"opening the site","action":{"type":"navigate","url":"https://example.com"}}
 
 Every reply must be EXACTLY one JSON object, no prose, no markdown fences:
 {
@@ -198,6 +207,7 @@ Every reply must be EXACTLY one JSON object, no prose, no markdown fences:
 
 Action types:
 - navigate {url}: go to a URL in the current tab
+- login {username, password}: fill the login form and submit it — ALWAYS use this for logins instead of typing each field
 - click {ref}: click an element by ref
 - type {ref, text}: clear and type text into an input by ref, then press through
 - scroll {direction, amount}
@@ -214,6 +224,8 @@ Rules:
 interface Action {
   type: string
   url?: string
+  username?: string
+  password?: string
   text?: string
   ref?: string
   direction?: string
@@ -294,6 +306,34 @@ async function executeAction(session: CDPSession, action: Action): Promise<strin
       const page = await getPageJson(session, { textLimit: 1500 })
       return 'Page after navigate:\n' + summarizePageJson(page)
     }
+    case 'login': {
+      const u = JSON.stringify(action.username || '')
+      const p = JSON.stringify(action.password || '')
+      const script = `
+        (async () => {
+          const pw = document.querySelector('input[type=password]');
+          if (!pw) return 'no password field on page';
+          const user = pw.closest('form')?.querySelector('input[type=email], input[type=text]:not([type=password])')
+            || document.querySelector('input[type=email]');
+          if (user) {
+            user.value = ${u};
+            user.dispatchEvent(new Event('input', { bubbles: true }));
+            user.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          pw.value = ${p};
+          pw.dispatchEvent(new Event('input', { bubbles: true }));
+          pw.dispatchEvent(new Event('change', { bubbles: true }));
+          const form = pw.closest('form');
+          if (form) { form.submit(); return 'submitted'; }
+          const btn = document.querySelector('button[type=submit], input[type=submit], button');
+          if (btn) { btn.click(); return 'submitted via button'; }
+          return 'filled but nothing to submit';
+        })()
+      `;
+      const r = await session.evaluate<string>(script)
+      await new Promise((res) => setTimeout(res, 2500))
+      return 'login attempt: ' + r
+    }
     case 'click': {
       if (!action.ref) return 'ERROR: click requires ref'
       const selector = refToSelector(action.ref)
@@ -365,14 +405,43 @@ export async function runTask(session: CDPSession, task: string, maxSteps = 15):
 
   let summary = ''
   for (let step = 1; step <= maxSteps; step++) {
-    let raw: string
-    try {
-      raw = (await callWithFallback(messages)).text
-    } catch (e) {
-      throw new Error((e as Error).message)
+    let raw: string = ""
+    let parsed: { thought: string; action: Action } | null = null
+
+    // Weak local models often echo page content or break format. Coach them
+    // with corrective retries before burning a step.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        raw = (await callWithFallback(messages)).text
+      } catch (e) {
+        throw new Error((e as Error).message)
+      }
+      try {
+        parsed = parseAction(raw)
+        break
+      } catch {
+        messages.push({ role: 'assistant', content: raw })
+        messages.push({
+          role: 'user',
+          content:
+            'INVALID. Reply with EXACTLY one JSON object like: {"thought":"clicking login","action":{"type":"click","ref":"e12"}} — never repeat page content, never write prose.'
+        })
+      }
     }
-    const { thought, action } = parseAction(raw)
-    const result = await executeAction(session, action)
+
+    if (!parsed) {
+      // gave up coaching — burn the step but keep the loop alive
+      steps.push({ step, thought: 'unparseable reply', action: { type: 'wait' }, result: 'model failed to emit a valid action 3 times', ok: false })
+      continue
+    }
+    const { thought, action } = parsed
+    let result: string
+    try {
+      result = await executeAction(session, action)
+    } catch (e) {
+      // feed the failure back so weak models can pick a different action
+      result = 'ERROR: ' + ((e as Error).message.split('\n')[0] || 'action failed')
+    }
     steps.push({ step, thought, action, result, ok: !result.startsWith('ERROR') })
     if (process.env.AGENTIC_VERBOSE === '1') {
       console.error(`[step ${step}] ${thought || '-'}\n  -> ${action.type} ${JSON.stringify({ ...action, type: undefined })}\n  => ${result.substring(0, 200)}`)
