@@ -166,10 +166,13 @@ async function callChat(
 }
 
 async function callOllama(base: string, messages: ChatMessage[]): Promise<string> {
+  // Tool-calling bridge for small local models: Ollama's format:"json"
+  // constrains decoding so even models WITHOUT native tool support emit
+  // parseable JSON actions.
   const res = await fetch(base.replace(/\/$/, '') + '/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: process.env.AGENTIC_MODEL || 'llama3.2', messages, stream: false })
+    body: JSON.stringify({ model: process.env.AGENTIC_MODEL || 'llama3.2', messages, stream: false, format: 'json' })
   })
   if (!res.ok) throw new Error(`Ollama API ${res.status}: ${(await res.text()).substring(0, 300)}`)
   const data = (await res.json()) as { message: { content: string } }
@@ -223,12 +226,52 @@ function parseAction(raw: string): { thought: string; action: Action } {
   let text = raw.trim()
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/)
   if (fence) text = fence[1].trim()
+
+  // balanced-brace extraction (survives prose around the JSON and nested braces)
   const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start === -1 || end === -1) throw new Error('Agent did not return JSON: ' + raw.substring(0, 200))
-  const obj = JSON.parse(text.substring(start, end + 1)) as { thought?: string; action?: Action }
-  if (!obj.action || !obj.action.type) throw new Error('Agent JSON missing action: ' + raw.substring(0, 200))
-  return { thought: obj.thought || '', action: obj.action }
+  if (start === -1) throw new Error('Agent did not return JSON: ' + raw.substring(0, 200))
+  let depth = 0
+  let end = -1
+  let inStr = false
+  let esc = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (esc) { esc = false; continue }
+    if (ch === '\\') { esc = true; continue }
+    if (ch === '"') inStr = !inStr
+    if (inStr) continue
+    if (ch === '{') depth++
+    if (ch === '}') { depth--; if (depth === 0) { end = i; break } }
+  }
+  if (end === -1) {
+    // repair truncated output: close open strings/braces
+    text = text.substring(start)
+    text = text.replace(/,\s*$/, '')
+    text += '"}'.repeat(1)
+    text = text.replace(/([\w"])\s*$/, '$1}')
+    while (depth > 0) { text += '}'; depth-- }
+    try {
+      const obj = JSON.parse(text) as { thought?: string; action?: Action }
+      return normalizeAction(obj, raw)
+    } catch { /* fall through */ }
+    throw new Error('Agent did not return JSON: ' + raw.substring(0, 200))
+  }
+
+  let body = text.substring(start, end + 1)
+  // repair trailing commas
+  body = body.replace(/,\s*([}\]])/g, '$1')
+  const obj = JSON.parse(body) as { thought?: string; action?: Action }
+  return normalizeAction(obj, raw)
+}
+
+/** Accept both {action:{...}} and flat {type,...}, and fill a missing type. */
+function normalizeAction(obj: { thought?: string; action?: Action }, raw: string): { thought: string; action: Action } {
+  let action = obj.action
+  if (!action && (obj as unknown as Action).type) {
+    action = obj as unknown as Action
+  }
+  if (!action || !action.type) throw new Error('Agent JSON missing action: ' + raw.substring(0, 200))
+  return { thought: obj.thought || '', action }
 }
 
 /** Normalize a ref like "e12" to the attribute selector used by the extractor. */

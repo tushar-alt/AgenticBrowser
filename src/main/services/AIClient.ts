@@ -123,7 +123,8 @@ export class AIClient {
   async sendMessage(
     messages: ChatMessage[],
     systemPrompt?: string,
-    callbacks?: StreamCallbacks
+    callbacks?: StreamCallbacks,
+    opts?: { jsonMode?: boolean }
   ): Promise<string> {
     const configs = this.getProviderConfigs()
     if (configs.length === 0) {
@@ -132,7 +133,7 @@ export class AIClient {
     let lastErr: unknown = null
     for (const config of configs) {
       try {
-        return await this.dispatchMessage(config, messages, systemPrompt, callbacks)
+        return await this.dispatchMessage(config, messages, systemPrompt, callbacks, opts)
       } catch (e) {
         lastErr = e
       }
@@ -169,7 +170,8 @@ export class AIClient {
     config: AIProviderConfig,
     messages: ChatMessage[],
     systemPrompt?: string,
-    callbacks?: StreamCallbacks
+    callbacks?: StreamCallbacks,
+    opts?: { jsonMode?: boolean }
   ): Promise<string> {
     // Subscription sign-ins: OAuth tokens resolve (and refresh) at call time.
     if (config.provider === 'claude-oauth') {
@@ -202,7 +204,7 @@ export class AIClient {
       case 'gemini':
         return this.sendGeminiMessage(config, messages, systemPrompt, callbacks)
       case 'ollama':
-        return this.sendOllamaMessage(config, messages, systemPrompt, callbacks)
+        return this.sendOllamaMessage(config, messages, systemPrompt, callbacks, opts)
       default:
         throw new Error(`Unsupported provider: ${config.provider}`)
     }
@@ -442,7 +444,8 @@ export class AIClient {
     config: AIProviderConfig,
     messages: ChatMessage[],
     systemPrompt?: string,
-    callbacks?: StreamCallbacks
+    callbacks?: StreamCallbacks,
+    opts?: { jsonMode?: boolean }
   ): Promise<string> {
     const model = config.model || 'llama3.1'
     const baseURL = config.baseURL || 'http://localhost:11434'
@@ -460,7 +463,7 @@ export class AIClient {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages: formattedMessages, stream: true })
+        body: JSON.stringify({ model, messages: formattedMessages, stream: true, ...(opts?.jsonMode ? { format: 'json' } : {}) })
       })
 
       if (!response.ok) {
@@ -501,7 +504,8 @@ export class AIClient {
     const response = await axios.post(url, {
       model,
       messages: formattedMessages,
-      stream: false
+      stream: false,
+      ...(opts?.jsonMode ? { format: 'json' } : {})
     })
 
     return response.data?.message?.content || ''

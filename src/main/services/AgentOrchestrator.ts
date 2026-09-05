@@ -237,7 +237,9 @@ Return exactly one JSON action object.`
       ]
 
       const response = await Promise.race([
-        this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT),
+        // JSON mode: constrains local/no-tool-calling models (Ollama) to emit
+        // parseable action objects — the tool-calling bridge.
+        this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT, undefined, { jsonMode: true }),
         new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 45000))
       ]).catch((e) => {
         throw new Error(
