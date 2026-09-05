@@ -302,6 +302,9 @@ async function executeAction(session: CDPSession, action: Action): Promise<strin
   switch (action.type) {
     case 'navigate': {
       if (!action.url) return 'ERROR: navigate requires url'
+      if (/^(file|chrome|chrome-extension|devtools|view-source|javascript|vbscript|blob):/i.test(action.url)) {
+        return 'ERROR: navigation to local/sensitive URLs is blocked'
+      }
       await session.send('Page.navigate', { url: action.url }, 45000)
       await waitLoad(session)
       const page = await getPageJson(session, { textLimit: 1500 })

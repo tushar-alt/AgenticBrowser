@@ -342,6 +342,10 @@ export class TabManager {
     const entry = this.tabs.get(tabId)
     if (!entry) return
 
+    // Security: never let tabs navigate to local/sensitive schemes — a page
+    // could otherwise prompt-inject the agent into reading local files.
+    if (/^(\s)*(file|chrome|chrome-extension|devtools|view-source|javascript|vbscript|blob):/i.test(url.trim())) return
+
     let targetUrl = url
     if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('about:') && !url.startsWith('data:')) {
       if (url.includes('.') && !url.includes(' ')) {

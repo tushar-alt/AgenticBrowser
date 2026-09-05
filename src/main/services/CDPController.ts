@@ -36,6 +36,10 @@ export class CDPController {
   }
 
   async navigate(tabId: string, url: string): Promise<void> {
+    // Security: block local/sensitive schemes (agent + MCP reach this path)
+    if (/^(\s)*(file|chrome|chrome-extension|devtools|view-source|javascript|vbscript|blob):/i.test(url)) {
+      throw new Error('Blocked: navigation to ' + url.split(':')[0] + ': URLs is not allowed')
+    }
     await this.sendCommand(tabId, 'Page.navigate', { url }, 30000)
   }
 
