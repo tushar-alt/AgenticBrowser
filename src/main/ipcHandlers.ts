@@ -97,6 +97,12 @@ export function setupIPCHandlers(): void {
     if (settings.apiKey && settings.aiProvider) {
       secureStorage.saveKey(settings.aiProvider, settings.apiKey, settings.baseURL, settings.model)
     }
+    // ISSUE 2 (root cause): the ACTIVE provider must follow selection even
+    // when no API key is involved (Ollama / subscription sign-ins), otherwise
+    // AIClient keeps using the previously stored provider.
+    if (settings.aiProvider) {
+      secureStorage.setActiveProvider(settings.aiProvider)
+    }
     delete settings.apiKey
     if (settings.theme) {
       nativeTheme.themeSource = settings.theme

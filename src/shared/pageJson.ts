@@ -48,6 +48,8 @@ export function extractionScript(opts: ExtractOptions = {}): string {
 
   let refCounter = 0;
   function nextRef(el) {
+    if (refSeen.has(el)) return el.getAttribute('data-ab-ref'); // ONE identity per element
+    refSeen.add(el);
     const ref = 'e' + (refCounter++);
     try { el.setAttribute('data-ab-ref', ref); } catch (e) {}
     return ref;
@@ -70,6 +72,12 @@ export function extractionScript(opts: ExtractOptions = {}): string {
     .map((h) => ({ level: Number(h.tagName.substring(1)), text: clean(h.innerText) }))
     .filter((h) => h.text.length > 0 && h.text.length < 300)
     .slice(0, 60);
+
+  // R1: previous snapshots stamp data-ab-ref attributes that persist in the
+  // DOM. Clear them so every observation gets FRESH identities, and never
+  // skip already-tagged elements (the old check emptied later snapshots).
+  document.querySelectorAll('[data-ab-ref]').forEach((el) => el.removeAttribute('data-ab-ref'));
+  const refSeen = new Set();
 
   const links = [];
   document.querySelectorAll('a[href]').forEach((a) => {
@@ -101,12 +109,14 @@ export function extractionScript(opts: ExtractOptions = {}): string {
       } catch (e) { return ''; }
     })(),
     method: (f.method || 'get').toUpperCase(),
-    fields: Array.from(f.querySelectorAll('input, select, textarea, button')).slice(0, 15).map((el) => ({
+    fields: Array.from(f.querySelectorAll('input, select, textarea, button'))
+      .filter((el) => !(el.tagName.toLowerCase() === 'input' && (el.type === 'hidden' || el.type === 'password')))
+      .slice(0, 15).map((el) => ({
       name: el.name || el.id || '',
       type: el.type || el.tagName.toLowerCase(),
       placeholder: clean(el.placeholder || '').substring(0, 80),
       required: !!el.required,
-      value: el.type === 'password' ? '' : (el.value || '').substring(0, 80)
+      value: (el.value || '').substring(0, 80)
     }))
   }));
 

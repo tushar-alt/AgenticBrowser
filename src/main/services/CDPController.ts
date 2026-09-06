@@ -84,7 +84,7 @@ export class CDPController {
     const escapedSelector = selector.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
     const escapedValue = value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')
 
-    await this.sendCommand(tabId, 'Runtime.evaluate', {
+    const result = (await this.sendCommand(tabId, 'Runtime.evaluate', {
       expression: `
         (() => {
           const el = document.querySelector('${escapedSelector}');
@@ -105,7 +105,11 @@ export class CDPController {
         })()
       `,
       returnByValue: true
-    })
+    })) as { result?: { value?: boolean }; exceptionDetails?: { text: string; exception?: { description?: string } } };
+    if (result.exceptionDetails) {
+      // ISSUE 7: typing failed on the page — report it, never claim success
+      throw new Error('Type failed: ' + (result.exceptionDetails.exception?.description || result.exceptionDetails.text));
+    }
   }
 
   async scroll(tabId: string, direction: 'up' | 'down', amount: number = 300): Promise<void> {

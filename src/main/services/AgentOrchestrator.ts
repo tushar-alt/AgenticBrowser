@@ -69,6 +69,7 @@ export class AgentOrchestrator extends EventEmitter {
   private lastPageJson: StructuredPage | null = null
   private consecutiveParseFailures = 0
   private taskMemory: string[] = []
+  private taskGeneration = 0
 
   private log(msg: string): void {
     const ts = new Date().toLocaleTimeString()
@@ -130,8 +131,16 @@ export class AgentOrchestrator extends EventEmitter {
           return 'filled but nothing to submit';
         })()
       `
-      await wc.executeJavaScript(loginScript, true).catch(() => {})
+      let loginResult = ''
+      await wc.executeJavaScript(loginScript, true)
+        .then((r) => { loginResult = String(r || '') })
+        .catch(() => { loginResult = 'script error' })
       await new Promise((r) => setTimeout(r, 2500))
+      // ISSUE 7: verify — no form means nothing happened; report honestly
+      let postUrl = wc.getURL()
+      if (loginResult.includes('no password field') && /login|signin/i.test(postUrl)) {
+        return 'Login failed: no login form exists on the current page (' + postUrl + ').'
+      }
       let title = '', url = wc.getURL()
       try {
         const pg = await wc.executeJavaScript('({ url: location.href, title: document.title })', true)
@@ -206,8 +215,8 @@ export class AgentOrchestrator extends EventEmitter {
   }
 
   async startTask(goal: string): Promise<AgentTask> {
-    if (this.task && this.task.status === 'running') {
-      throw new Error('An agent task is already running')
+    if (this.task && (this.task.status === 'running' || this.task.status === 'paused')) {
+      throw new Error('An agent task is already ' + this.task.status + ' — stop it first')
     }
 
     this.debugLog = []
@@ -227,6 +236,8 @@ export class AgentOrchestrator extends EventEmitter {
     this.isPaused = false
     this.isStopped = false
     this.taskMemory = []
+    this.taskGeneration++
+    this.consecutiveParseFailures = 0
     this.emit('status', task)
 
     try {
@@ -279,7 +290,7 @@ export class AgentOrchestrator extends EventEmitter {
       }
 
       // BrowserOS-style loop: act until the model reports done.
-      await this.runAgentLoop(task, goal)
+      await this.runAgentLoop(task, goal, this.taskGeneration)
     } catch (error: unknown) {
       await this.clearBanner()
       task.status = 'failed'
@@ -330,8 +341,10 @@ export class AgentOrchestrator extends EventEmitter {
    * latest page snapshot (with stable element refs), returns exactly one JSON
    * action, we execute it and auto-include a fresh snapshot for verification.
    */
-  private async runAgentLoop(task: AgentTask, goal: string): Promise<void> {
+  private async runAgentLoop(task: AgentTask, goal: string, gen: number): Promise<void> {
     let finalSummary = ''
+    // ISSUE 4: actions stay pinned to the tab the task started on
+    const pinnedTabId = this.tabManager.getActiveTab()?.id || null
 
     for (let turn = 1; turn <= MAX_TURNS; turn++) {
       if (this.isStopped) break
@@ -340,6 +353,9 @@ export class AgentOrchestrator extends EventEmitter {
 
       task.currentStep = turn
       this.emit('status', task)
+
+      // ISSUE 4: a replaced/stopped generation must never act
+      if (gen !== this.taskGeneration || this.isStopped) break
 
       const activeTab = this.tabManager.getActiveTab()
       if (!activeTab) throw new Error('No active tab')
@@ -387,6 +403,10 @@ Return exactly one JSON action object.`
         )
       })
       this.log(`🤖 Model: ${response.substring(0, 180)}`)
+
+      // ISSUE 4: pause applies once the in-flight model call settles
+      await this.waitWhilePaused()
+      if (this.isStopped || this.taskGeneration !== gen) break
 
       let parsed = this.parseAction(response)
       if (!parsed) {
@@ -437,15 +457,20 @@ Return exactly one JSON action object.`
       if (this.isStopped) break
 
       // Approval gate
+      // ISSUE 3: classify the RESOLVED target, not just model-written text
+      const targetText = this.resolveTargetText(action, pageCtx)
       const needsApproval =
         this.approvalMode === 'always' ||
-        (this.approvalMode === 'sensitive' && this.isSensitive(action, pageCtx))
+        (this.approvalMode === 'sensitive' &&
+          (this.isSensitive(action, pageCtx) || this.isDestructiveTargetText(targetText)))
       if (needsApproval) {
         const approved = await this.requestApproval(action.summary || action.type)
         if (!approved) {
+          const denial = `DENIED by user: ${action.type} ${action.summary || action.ref || action.url || ''}`.trim()
+          this.taskMemory.push(denial)
           this.addAction(task, {
             type: 'wait',
-            description: `Skipped (denied by user): ${action.summary || action.type}`,
+            description: denial,
             status: 'failed'
           })
           continue
@@ -513,19 +538,20 @@ Return exactly one JSON action object.`
         status: 'running'
       })
 
-      const bannerDetail = String(action.url || action.text || action.ref || action.type).substring(0, 60)
+      const bannerDetail = this.safeActionDetail(action, pageCtx)
       await this.setBanner(`${this.bannerVerb(action.type)} · ${bannerDetail}`)
 
       try {
         const cdpAction = this.toCDPAction(action)
-        const tabCtx = this.tabManager.getActiveTab()
+        // execute on the pinned tab (fall back only if it was closed)
+        const tabCtx = (pinnedTabId ? this.tabManager.getTab(pinnedTabId) : null) || this.tabManager.getActiveTab()
         if (!tabCtx) throw new Error('No active tab')
         const result = await this.cdpController.executeAction(tabCtx.id, cdpAction)
         agentAction.status = 'completed'
         agentAction.result = String(result).substring(0, 400)
         this.emit('action', agentAction)
-        this.log(`✅ ${action.type}: ${String(result).substring(0, 120)}`)
-        this.taskMemory.push(`${action.type} ${desc} → done: ${String(result).substring(0, 100)}`)
+        this.log(`✅ ${action.type}: ${this.safeActionDetail(action, pageCtx)}`)
+        this.taskMemory.push(`${action.type} ${this.safeActionDetail(action, pageCtx)} → done: ${String(result).substring(0, 100)}`)
 
         if (action.type === 'navigate' || action.type === 'click') {
           this.tabManager.revealActiveTab()
@@ -540,12 +566,13 @@ Return exactly one JSON action object.`
         agentAction.result = error instanceof Error ? error.message : String(error)
         this.emit('action', agentAction)
         this.log(`⚠️ ${action.type} failed: ${agentAction.result}`)
-        this.taskMemory.push(`${action.type} ${desc} → FAILED: ${agentAction.result.substring(0, 100)}`)
+        this.taskMemory.push(`${action.type} ${this.safeActionDetail(action, pageCtx)} → FAILED: ${agentAction.result.substring(0, 100)}`)
         // Feed the error back to the model via the next snapshot turn
       }
     }
 
     await this.clearBanner()
+    if (gen !== this.taskGeneration) return // replaced by a newer task
     // ISSUE 7: distinguish verified completion from budget exhaustion
     if (this.isStopped) {
       task.status = 'stopped'
@@ -572,6 +599,36 @@ Return exactly one JSON action object.`
       this.log(`⚠️ snapshot failed: ${e instanceof Error ? e.message : String(e)}`)
       return '(snapshot unavailable — the page may still be loading; try again or navigate)'
     }
+  }
+
+  /** True when the action types into a password/secret field. */
+  private isSecretTyping(action: ParsedAction, pageCtx: StructuredPage | null): boolean {
+    if (action.type !== 'type' || !action.ref) return false
+    if (pageCtx) {
+      for (const i of pageCtx.interactive) {
+        if (i.ref === action.ref) return i.type === 'password'
+      }
+    }
+    // unknown target: be conservative when the model names it a password
+    return /password/i.test(action.thought || '')
+  }
+
+  /** Value description safe for banners/logs/memory. */
+  private safeActionDetail(action: ParsedAction, pageCtx: StructuredPage | null): string {
+    if (this.isSecretTyping(action, pageCtx)) return 'typed [REDACTED] into ' + (action.ref || 'field')
+    return String(action.summary || action.text || action.ref || action.url || action.type).substring(0, 60)
+  }
+
+  /** Visible text of the element an action targets, from the latest snapshot. */
+  private resolveTargetText(action: ParsedAction, pageCtx: StructuredPage | null): string {
+    if (!action.ref || !pageCtx) return ''
+    for (const l of pageCtx.links) if (l.ref === action.ref) return l.text
+    for (const i of pageCtx.interactive) if (i.ref === action.ref) return i.text || i.placeholder
+    return ''
+  }
+
+  private isDestructiveTargetText(text: string): boolean {
+    return /delete|remove|deactivate|unsubscribe|log ?out|purchase|checkout|pay(?!e)|confirm payment|send (message|email|payment)|submit order|transfer/i.test(text || '')
   }
 
   private isSensitive(action: ParsedAction, pageCtx: unknown): boolean {
@@ -755,6 +812,7 @@ Return exactly one JSON action object.`
 
 interface ParsedAction {
   type: string
+  thought?: string
   url?: string
   username?: string
   password?: string
