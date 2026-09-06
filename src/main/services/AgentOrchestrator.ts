@@ -67,6 +67,8 @@ export class AgentOrchestrator extends EventEmitter {
   private approvalMode: 'always' | 'sensitive' | 'never' = 'sensitive'
   private debugLog: string[] = []
   private lastPageJson: StructuredPage | null = null
+  private consecutiveParseFailures = 0
+  private taskMemory: string[] = []
 
   private log(msg: string): void {
     const ts = new Date().toLocaleTimeString()
@@ -224,6 +226,7 @@ export class AgentOrchestrator extends EventEmitter {
     this.task = task
     this.isPaused = false
     this.isStopped = false
+    this.taskMemory = []
     this.emit('status', task)
 
     try {
@@ -353,9 +356,16 @@ export class AgentOrchestrator extends EventEmitter {
       const snapshot = await this.extractPageSnapshot(webContents)
       const pageCtx = this.lastPageJson
 
+      // ISSUE 5: bounded task memory — recent actions and their results stay
+      // available to the model across navigations (last 6, compact).
+      const memoryBlock =
+        this.taskMemory.length > 0
+          ? 'Recent actions and results:\n' + this.taskMemory.slice(-6).map((m) => '- ' + m).join('\n') + '\n\n'
+          : ''
+
       const context = `Goal: ${goal}
 
-Current page snapshot (refs like [e12] are stable element handles for click/type):
+${memoryBlock}Current page snapshot (refs like [e12] are stable element handles for click/type):
 ${snapshot}
 
 Return exactly one JSON action object.`
@@ -381,7 +391,7 @@ Return exactly one JSON action object.`
       let parsed = this.parseAction(response)
       if (!parsed) {
         // coach weak models: up to 2 corrective re-asks before burning the turn
-        for (let retry = 0; retry < 2 && !parsed; retry++) {
+        for (let retry = 0; retry < 3 && !parsed; retry++) {
           this.log('⚠️ Unparseable reply — coaching the model...')
           messages.push({
             id: 'fix' + turn + '-' + retry,
@@ -392,7 +402,7 @@ Return exactly one JSON action object.`
           })
           try {
             const retryResp = await Promise.race([
-              this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT),
+              this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT, undefined, { jsonMode: true }),
               new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 45000))
             ])
             parsed = this.parseAction(retryResp)
@@ -400,11 +410,19 @@ Return exactly one JSON action object.`
         }
       }
       if (!parsed) {
-        this.log('⚠️ Could not parse model JSON after coaching — skipping turn')
+        // ISSUE 8: bounded retries — the turn budget must always advance
+        this.consecutiveParseFailures++
+        this.log('⚠️ Could not parse model JSON after coaching (streak ' + this.consecutiveParseFailures + ')')
+        if (this.consecutiveParseFailures < 3) {
+          turn--
+        } else {
+          this.log('❌ Model repeatedly failed to produce valid actions — stopping.')
+          break
+        }
         await new Promise((r) => setTimeout(r, 500))
-        turn--
         continue
       }
+      this.consecutiveParseFailures = 0
       const { thought, action } = parsed!
       // destructured above
       this.log(`💭 ${thought || '(no thought)'} -> ${action.type}`)
@@ -414,6 +432,9 @@ Return exactly one JSON action object.`
         this.log(`✅ ${finalSummary}`)
         break
       }
+
+      // ISSUE 4: never act once Stop was requested
+      if (this.isStopped) break
 
       // Approval gate
       const needsApproval =
@@ -504,6 +525,7 @@ Return exactly one JSON action object.`
         agentAction.result = String(result).substring(0, 400)
         this.emit('action', agentAction)
         this.log(`✅ ${action.type}: ${String(result).substring(0, 120)}`)
+        this.taskMemory.push(`${action.type} ${desc} → done: ${String(result).substring(0, 100)}`)
 
         if (action.type === 'navigate' || action.type === 'click') {
           this.tabManager.revealActiveTab()
@@ -518,13 +540,23 @@ Return exactly one JSON action object.`
         agentAction.result = error instanceof Error ? error.message : String(error)
         this.emit('action', agentAction)
         this.log(`⚠️ ${action.type} failed: ${agentAction.result}`)
+        this.taskMemory.push(`${action.type} ${desc} → FAILED: ${agentAction.result.substring(0, 100)}`)
         // Feed the error back to the model via the next snapshot turn
       }
     }
 
     await this.clearBanner()
-    task.status = this.isStopped ? 'stopped' : 'completed'
-    if (finalSummary) task.summary = finalSummary
+    // ISSUE 7: distinguish verified completion from budget exhaustion
+    if (this.isStopped) {
+      task.status = 'stopped'
+    } else if (finalSummary) {
+      task.status = 'completed'
+      task.summary = finalSummary
+    } else {
+      task.status = 'failed'
+      task.error = 'Turn budget exhausted before the agent reported completion. The task may be partially done — check the activity log.'
+      task.summary = task.error
+    }
     task.endTime = Date.now()
     this.emit('status', task)
   }
@@ -692,6 +724,10 @@ Return exactly one JSON action object.`
   stop(): void {
     this.isStopped = true
     this.isPaused = false
+    if (this.approvalResolver) {
+      this.approvalResolver(false)
+      this.approvalResolver = null
+    }
     void this.clearBanner()
     if (this.task) {
       this.task.status = 'stopped'

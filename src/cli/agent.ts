@@ -423,6 +423,10 @@ async function runDeterministicFlow(
   if (loginM) {
     push('detected login flow', 'login', 'filling credentials + submitting')
     const r = await executeAction(session, { type: 'login', username: loginM[1], password: loginM[2] })
+    if (String(r).includes('no password field')) {
+      push('login', 'login', 'FAILED: no login form found on this page')
+      return { summary: 'Login failed: no login form exists on the current page.', steps }
+    }
     // poll for navigation — slow servers / sleeping dynos can take 10s+
     let page: { url: string; title: string; text: string } | null = null
     for (let poll = 0; poll < 10; poll++) {

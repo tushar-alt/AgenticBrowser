@@ -91,7 +91,15 @@ export function extractionScript(opts: ExtractOptions = {}): string {
 
   const forms = Array.from(document.querySelectorAll('form')).slice(0, 8).map((f) => ({
     ref: nextRef(f),
-    action: f.action || '',
+    // SECURITY: strip query strings — form action URLs can carry session
+    // tokens / reset secrets; data:/blob: actions echo page content.
+    action: (() => {
+      try {
+        const u = new URL(f.action, location.href);
+        if (u.protocol === 'data:' || u.protocol === 'blob:') return '(inline form)';
+        return u.origin + u.pathname;
+      } catch (e) { return ''; }
+    })(),
     method: (f.method || 'get').toUpperCase(),
     fields: Array.from(f.querySelectorAll('input, select, textarea, button')).slice(0, 15).map((el) => ({
       name: el.name || el.id || '',
@@ -122,13 +130,24 @@ export function extractionScript(opts: ExtractOptions = {}): string {
   const sel = 'button, input, select, textarea, [role="button"], [role="tab"], [role="checkbox"], [role="combobox"], [contenteditable="true"], [onclick]';
   document.querySelectorAll(sel).forEach((el) => {
     if (interactive.length >= 50) return;
+    // ISSUE 6: elements already referenced by the links pass keep ONE identity
+    if (el.hasAttribute('data-ab-ref')) return;
     const tag = el.tagName.toLowerCase();
+    // SECURITY: never expose hidden fields or credential values to the model
     if (tag === 'input' && (el.type === 'hidden')) return;
+    const isSecret = tag === 'input' && (el.type === 'password' || /pass|pwd|secret|token|card[-_]?number|cvv|ssn/i.test(el.name || '') && el.type !== 'search');
+    let displayText = '';
+    if (tag === 'input' || tag === 'textarea') {
+      if (isSecret) displayText = '\u2022\u2022\u2022\u2022\u2022\u2022 (value hidden)';
+      else if (el.value) displayText = clean(el.value).substring(0, 80);
+    } else {
+      displayText = clean(el.innerText || '').substring(0, 80);
+    }
     interactive.push({
       ref: nextRef(el),
       tag,
       type: el.type || el.getAttribute('role') || '',
-      text: clean(el.innerText || el.value || '').substring(0, 80),
+      text: displayText,
       placeholder: clean(el.placeholder || '').substring(0, 80)
     });
   });

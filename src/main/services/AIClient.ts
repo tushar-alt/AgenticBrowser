@@ -6,6 +6,7 @@ import os from 'os'
 import path from 'path'
 import { AIProviderConfig, ChatMessage, VisionImage } from '@shared/types'
 import { SecureStorage } from './SecureStorage'
+import { getSettings } from './AppSettingsStore'
 import { OAuthAccounts, type OAuthKind } from './OAuthAccounts'
 
 interface StreamCallbacks {
@@ -63,15 +64,26 @@ export class AIClient {
 
   private getStoredProviderConfig(): AIProviderConfig | null {
     const provider = this.secureStorage.getActiveProvider()
-    const config = this.secureStorage.getConfig()
+    // ISSUE 2: the authoritative model/endpoint live in AppSettingsStore
+    // (Settings writes there), not in SecureStorage's per-provider config.
+    const appSettings = getSettings()
+    const settingsModel = appSettings.model || undefined
+    const settingsBaseURL = appSettings.baseURL || undefined
+    const config = { model: settingsModel || undefined, baseURL: settingsBaseURL || undefined }
+
     // Subscription sign-in providers authenticate via OAuth, not stored keys.
     if (provider === 'claude-oauth' || provider === 'chatgpt-oauth') {
       if (!this.oauth.status(provider as OAuthKind).connected) return null
-      return { provider, apiKey: '', model: config?.model }
+      return { provider, apiKey: '', model: settingsModel || config?.model }
     }
-    // Local Ollama needs no API key either
+    // ISSUE 2: local-only inference — never fall back to a cloud provider
     if (provider === 'ollama') {
-      return { provider, apiKey: '', baseURL: config?.baseURL || 'http://localhost:11434', model: config?.model || 'tinyllama:1.1b' }
+      return {
+        provider,
+        apiKey: '',
+        baseURL: settingsBaseURL || 'http://localhost:11434',
+        model: settingsModel || 'tinyllama:1.1b'
+      }
     }
     const apiKey = this.secureStorage.getKey()
     if (!apiKey) return null
@@ -92,6 +104,11 @@ export class AIClient {
     const configs: AIProviderConfig[] = []
     const stored = this.getStoredProviderConfig()
     if (stored) configs.push(stored)
+    // ISSUE 2: local-only inference must never silently egress to a cloud
+    // provider — cloud fallbacks apply only to key-based providers.
+    if (stored && (stored.provider === 'ollama' || stored.provider === 'claude-oauth' || stored.provider === 'chatgpt-oauth')) {
+      return configs
+    }
     for (const fb of loadZCodeFallbackConfigs()) {
       configs.push(fb)
     }
