@@ -64,7 +64,9 @@ export class AIClient {
   }
 
   private getStoredProviderConfig(): AIProviderConfig | null {
-    const provider = this.secureStorage.getActiveProvider()
+    // ISSUE 2 (authoritative source): the ACTIVE provider lives in settings
+    // (what the UI shows), not in a second pointer that can go stale.
+    const provider = getSettings().aiProvider || this.secureStorage.getActiveProvider()
     // ISSUE 2: the authoritative model/endpoint live in AppSettingsStore
     // (Settings writes there), not in SecureStorage's per-provider config.
     const appSettings = getSettings()
