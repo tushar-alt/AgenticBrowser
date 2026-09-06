@@ -89,7 +89,9 @@ export class SecureStorage {
       custom: !!configs.custom,
       zai: !!configs.zai,
       'claude-oauth': false,
-      'chatgpt-oauth': false
+      'chatgpt-oauth': false,
+      'gemini-oauth': false,
+      'gemini-web': false
     }
   }
 }

@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'custom' | 'zai' | 'claude-oauth' | 'chatgpt-oauth'
+export type AIProvider = 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'custom' | 'zai' | 'claude-oauth' | 'chatgpt-oauth' | 'gemini-oauth' | 'gemini-web'
 
 export interface AIKeyConfig {
   provider: AIProvider

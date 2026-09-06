@@ -576,7 +576,7 @@ export function setupIPCHandlers(): void {
   // ── Subscription sign-in (OAuth) ─────────────────────────────────────────
 
   ipcMain.handle(IPC_CHANNELS.OAUTH_START, async (_event, kind: OAuthKind) => {
-    if (kind !== 'claude' && kind !== 'chatgpt') throw new Error(`Unknown sign-in provider: ${kind}`)
+    if (kind !== 'claude' && kind !== 'chatgpt' && kind !== 'gemini') throw new Error(`Unknown sign-in provider: ${kind}`)
     return oauthAccounts.signIn(kind, (url) => void shell.openExternal(url))
   })
 

@@ -56,7 +56,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     custom: false,
     zai: false,
     'claude-oauth': false,
-    'chatgpt-oauth': false
+    'chatgpt-oauth': false,
+    'gemini-oauth': false,
+    'gemini-web': false
   },
   testResult: null,
 

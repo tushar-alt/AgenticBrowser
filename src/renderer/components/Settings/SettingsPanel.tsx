@@ -407,7 +407,8 @@ export function SettingsPanel(): React.JSX.Element {
 
                 {([
                   { id: 'claude', provider: 'claude-oauth', name: 'Claude Pro / Max', desc: 'Sign in with your Claude.ai account', plan: 'claude.ai subscription' },
-                  { id: 'chatgpt', provider: 'chatgpt-oauth', name: 'ChatGPT Plus / Pro', desc: 'Sign in with your ChatGPT account', plan: 'chatgpt.com subscription' }
+                  { id: 'chatgpt', provider: 'chatgpt-oauth', name: 'ChatGPT Plus / Pro', desc: 'Sign in with your ChatGPT account', plan: 'chatgpt.com subscription' },
+                  { id: 'gemini', provider: 'gemini-oauth', name: 'Gemini (Google)', desc: 'Sign in with your Google account', plan: 'free individual tier' }
                 ] as const).map((p) => {
                   const connected = oauth[p.id]?.connected
                   return (
@@ -482,7 +483,7 @@ export function SettingsPanel(): React.JSX.Element {
                   }}
                   className={`${field} mb-4`}
                 >
-                  {(['openai', 'anthropic', 'gemini', 'zai', 'ollama', 'custom'] as AIProvider[]).map((p) => (
+                  {(['openai', 'anthropic', 'gemini', 'zai', 'ollama', 'gemini-web', 'custom'] as AIProvider[]).map((p) => (
                     <option key={p} value={p}>{PROVIDER_LABELS[p] || p}</option>
                   ))}
                 </select>

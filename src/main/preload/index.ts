@@ -125,9 +125,9 @@ const api = {
   },
 
   oauth: {
-    signIn: (kind: 'claude' | 'chatgpt'): Promise<{ connected: boolean; expiresAt?: number }> =>
+    signIn: (kind: 'claude' | 'chatgpt' | 'gemini'): Promise<{ connected: boolean; expiresAt?: number }> =>
       ipcRenderer.invoke(IPC_CHANNELS.OAUTH_START, kind),
-    disconnect: (kind: 'claude' | 'chatgpt'): Promise<boolean> =>
+    disconnect: (kind: 'claude' | 'chatgpt' | 'gemini'): Promise<boolean> =>
       ipcRenderer.invoke(IPC_CHANNELS.OAUTH_DISCONNECT, kind),
     status: (): Promise<Record<string, { connected: boolean; expiresAt?: number }>> =>
       ipcRenderer.invoke(IPC_CHANNELS.OAUTH_STATUS)

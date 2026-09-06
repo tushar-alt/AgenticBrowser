@@ -5,9 +5,10 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { AIProviderConfig, ChatMessage, VisionImage } from '@shared/types'
+import { net, session as electronSession } from 'electron'
 import { SecureStorage } from './SecureStorage'
 import { getSettings } from './AppSettingsStore'
-import { OAuthAccounts, type OAuthKind } from './OAuthAccounts'
+import { OAuthAccounts } from './OAuthAccounts'
 
 interface StreamCallbacks {
   onToken: (token: string) => void
@@ -72,9 +73,14 @@ export class AIClient {
     const config = { model: settingsModel || undefined, baseURL: settingsBaseURL || undefined }
 
     // Subscription sign-in providers authenticate via OAuth, not stored keys.
-    if (provider === 'claude-oauth' || provider === 'chatgpt-oauth') {
-      if (!this.oauth.status(provider as OAuthKind).connected) return null
-      return { provider, apiKey: '', model: settingsModel || config?.model }
+    if (provider === 'claude-oauth' || provider === 'chatgpt-oauth' || provider === 'gemini-oauth') {
+      const kind = provider === 'claude-oauth' ? 'claude' : provider === 'chatgpt-oauth' ? 'chatgpt' : 'gemini'
+      if (!this.oauth.status(kind).connected) return null
+      return { provider, apiKey: '', model: settingsModel || (provider === 'gemini-oauth' ? 'gemini-2.5-flash' : config?.model) }
+    }
+    // Gemini Web: anonymous access, no key, no sign-in
+    if (provider === 'gemini-web') {
+      return { provider, apiKey: '', model: settingsModel || 'gemini-web-flash' }
     }
     // ISSUE 2: local-only inference — never fall back to a cloud provider
     if (provider === 'ollama') {
@@ -106,7 +112,7 @@ export class AIClient {
     if (stored) configs.push(stored)
     // ISSUE 2: local-only inference must never silently egress to a cloud
     // provider — cloud fallbacks apply only to key-based providers.
-    if (stored && (stored.provider === 'ollama' || stored.provider === 'claude-oauth' || stored.provider === 'chatgpt-oauth')) {
+    if (stored && (stored.provider === 'ollama' || stored.provider === 'gemini-web' || stored.provider === 'gemini-oauth' || stored.provider === 'claude-oauth' || stored.provider === 'chatgpt-oauth')) {
       return configs
     }
     for (const fb of loadZCodeFallbackConfigs()) {
@@ -209,6 +215,16 @@ export class AIClient {
         messages, systemPrompt, callbacks
       )
     }
+    if (config.provider === 'gemini-web') {
+      return this.sendGeminiWeb(config, messages, systemPrompt, callbacks)
+    }
+    if (config.provider === 'gemini-oauth') {
+      const token = await this.oauth.accessToken('gemini')
+      return this.sendGeminiCodeAssist(
+        { ...config, provider: 'gemini-oauth', apiKey: token },
+        messages, systemPrompt, callbacks
+      )
+    }
     if (config.provider === 'zai') {
       // Z.ai GLM Coding Plan: Anthropic-compatible endpoint, plan API key.
       return this.sendAnthropicMessage(
@@ -247,6 +263,9 @@ export class AIClient {
     }
     if (config.provider === 'chatgpt-oauth') {
       throw new Error('Vision is not yet supported for ChatGPT subscription sign-in — use an API key for screenshots.')
+    }
+    if (config.provider === 'gemini-web') {
+      throw new Error('Vision is not supported for Gemini Web (anonymous) — use an API key or subscription sign-in for screenshots.')
     }
     if (config.provider === 'zai') {
       return this.sendAnthropicVisionMessage(
@@ -970,5 +989,230 @@ export class AIClient {
       const msg = error instanceof Error ? error.message : String(error)
       return { success: false, message: msg }
     }
+  }
+
+  /**
+   * Google Code Assist API (the endpoint the Gemini CLI uses) — subscription
+   * sign-in with an OAuth bearer token instead of an API key.
+   */
+  private async sendGeminiCodeAssist(
+    config: AIProviderConfig,
+    messages: ChatMessage[],
+    systemPrompt?: string,
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    const token = config.apiKey
+    let project = this.oauth.getProjectId('gemini')
+    const metadata = {
+      ideType: 'IDE_UNSPECIFIED',
+      ideVersion: '1.0',
+      platform: 'PLATFORM_UNSPECIFIED',
+      pluginType: 'GEMINI'
+    }
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+      'x-goog-api-client': 'agentic-browser/1.0'
+    }
+
+    // one-time onboarding: resolve the user's cloud companion project
+    if (!project) {
+      const load = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ metadata })
+      })
+      if (!load.ok) throw new Error('Gemini sign-in: loadCodeAssist ' + load.status)
+      const data = (await load.json()) as { currentTier?: { id?: string }; cloudaicompanionProject?: string }
+      let projectId = data.cloudaicompanionProject
+      if (!projectId) {
+        const tierId = data.currentTier?.id
+        if (!tierId) throw new Error('Gemini sign-in: no tier available for this account')
+        for (let i = 0; i < 10; i++) {
+          const onb = await fetch('https://cloudcode-pa.googleapis.com/v1internal:onboardUser', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ tierId, metadata })
+          })
+          if (!onb.ok) throw new Error('Gemini sign-in: onboardUser ' + onb.status)
+          const od = (await onb.json()) as { done?: boolean; cloudaicompanionProject?: string }
+          if (od.done && od.cloudaicompanionProject) { projectId = od.cloudaicompanionProject; break }
+          await new Promise((r) => setTimeout(r, 1200))
+        }
+        if (!projectId) throw new Error('Gemini sign-in: onboarding did not complete')
+      }
+      project = projectId
+      this.oauth.setProjectId('gemini', projectId)
+    }
+
+    const model = config.model || 'gemini-2.5-flash'
+    const contents = messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }))
+    const body = {
+      model,
+      project,
+      request: {
+        contents,
+        ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}),
+        generationConfig: { maxOutputTokens: 4096 }
+      }
+    }
+
+    const res = await fetch('https://cloudcode-pa.googleapis.com/v1internal:generateContent', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    })
+    if (!res.ok) {
+      throw new Error(`Gemini API ${res.status}: ${(await res.text()).substring(0, 300)}`)
+    }
+    const data = (await res.json()) as {
+      response?: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+    }
+    const text = (data.response?.candidates || [])
+      .flatMap((cand) => (cand.content?.parts || []).map((p) => p.text || ''))
+      .join('')
+    if (callbacks) {
+      callbacks.onToken(text)
+      callbacks.onComplete(text)
+    }
+    return text
+  }
+
+  /**
+   * Gemini Web provider — talks to the public StreamGenerate endpoint of
+   * gemini.google.com exactly like gemini-web2api: anonymous access for text
+   * generation, model selection via the MODE_CATEGORY slot [79]. Uses
+   * Chromium's network stack (net.fetch) so redirect chains and cookies work.
+   */
+  private cachedGeminiBl = ''
+
+  private async geminiFetchBl(): Promise<string> {
+    if (this.cachedGeminiBl) return this.cachedGeminiBl
+    try {
+      const res = await net.fetch('https://gemini.google.com/app', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      })
+      const html = await res.text()
+      const m = html.match(/boq_assistant-bard-web-server_\d+\.\d+_p\d+/)
+      if (m) {
+        this.cachedGeminiBl = m[0]
+        return m[0]
+      }
+    } catch { /* fall back to hardcoded bl */ }
+    this.cachedGeminiBl = 'boq_assistant-bard-web-server_20260716.08_p0'
+    return this.cachedGeminiBl
+  }
+
+  private async geminiEvaluate<T = unknown>(expression: string): Promise<T> {
+    const ses = electronSession.defaultSession
+    const res = await ses.fetch('https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=' + this.cachedGeminiBl + '&hl=en&rt=c', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://gemini.google.com',
+        'Referer': 'https://gemini.google.com/app',
+        'X-Same-Domain': '1',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      body: expression
+    })
+    return (await res.text()) as unknown as T
+  }
+
+  private extractGeminiWebText(raw: string): string {
+    if (/BardErrorInfo\s*\[(\d+)\]/.test(raw)) {
+      throw new Error('Gemini upstream rejected the request')
+    }
+    const texts: string[] = []
+    for (const line of raw.split('\n')) {
+      if (!line.includes('"wrb.fr"') || line.length < 200) continue
+      try {
+        const arr = JSON.parse(line) as unknown[]
+        const outer = arr as Array<unknown>
+        const first = outer[0] as Array<unknown>
+        const innerStr = first?.[2]
+        if (!innerStr || typeof innerStr !== 'string' || innerStr.length < 50) continue
+        const inner = JSON.parse(innerStr) as Array<unknown>
+        if (Array.isArray(inner) && inner.length > 4 && inner[4]) {
+          for (const part of inner[4] as Array<unknown>) {
+            if (Array.isArray(part) && part.length > 1 && part[1]) {
+              if (Array.isArray(part[1])) {
+                for (const t of part[1]) {
+                  if (typeof t === 'string' && t.length > 0) texts.push(t)
+                }
+              }
+            }
+          }
+        }
+      } catch { /* skip malformed line */ }
+    }
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (texts[i].trim()) return texts[i].replace(/```(?:python|javascript|text)\?code_(?:reference|stdout)&code_event_index=\d+\n[\s\S]*?```\n?/g, '').trim()
+    }
+    return ''
+  }
+
+  private async sendGeminiWeb(
+    config: AIProviderConfig,
+    messages: ChatMessage[],
+    systemPrompt?: string,
+    callbacks?: StreamCallbacks
+  ): Promise<string> {
+    // model -> MODE_CATEGORY slot values (1=flash, 2=thinking, 3=pro, 4=auto, 6=lite)
+    const modelMap: Record<string, { mode: number; think: number }> = {
+      'gemini-web-flash': { mode: 1, think: 4 },
+      'gemini-web-thinking': { mode: 2, think: 0 },
+      'gemini-web-pro': { mode: 3, think: 4 },
+      'gemini-web-auto': { mode: 4, think: 4 }
+    }
+    const chosen = modelMap[config.model || ''] || modelMap['gemini-web-flash']
+
+    // flatten the conversation into one web prompt (web UI is single-turn)
+    const convo = messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => (m.role === 'user' ? 'User: ' + m.content : 'Assistant: ' + m.content))
+      .join('\n\n')
+    const prompt = (systemPrompt ? systemPrompt + '\n\n' : '') + convo
+
+    await this.geminiFetchBl() // warm the build-label cache used in the URL
+    const inner: unknown[] = new Array(80).fill(null)
+    inner[0] = [prompt, 0, null, null, null, null, 0]
+    inner[1] = ['en']
+    inner[2] = ['', '', '', null, null, null, null, null, null, '']
+    inner[6] = [0]
+    inner[7] = 1
+    inner[10] = 1
+    inner[11] = 0
+    inner[17] = [[chosen.think]]
+    inner[18] = 0
+    inner[27] = 1
+    inner[30] = [4]
+    inner[41] = [2]
+    inner[53] = 0
+    inner[59] = require('crypto').randomUUID()
+    inner[79] = chosen.mode
+
+    const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(inner)]))
+
+    let raw = ''
+    for (let attempt = 0; attempt < 3; attempt++) {
+      raw = (await this.geminiEvaluate(body)) as unknown as string
+      if (raw && raw.length > 0) break
+      // refresh bl on 405-ish stale responses and retry
+      this.cachedGeminiBl = ''
+      await this.geminiFetchBl()
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    if (!raw) throw new Error('Gemini Web returned an empty response after retries')
+
+    const text = this.extractGeminiWebText(raw)
+    if (!text) throw new Error('Gemini Web response could not be parsed (page protocol may have changed)')
+    if (callbacks) {
+      callbacks.onToken(text)
+      callbacks.onComplete(text)
+    }
+    return text
   }
 }

@@ -16,6 +16,7 @@ export const DEFAULT_AI_MODELS: Record<string, string[]> = {
   custom: [],
   zai: ['glm-4.6', 'glm-5', 'glm-5-turbo', 'glm-5.3'],
   'claude-oauth': ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-5-haiku-20241022'],
+  'gemini-web': ['gemini-web-flash', 'gemini-web-thinking', 'gemini-web-pro', 'gemini-web-auto'],
   'chatgpt-oauth': ['gpt-5', 'gpt-5-codex', 'gpt-4.1', 'o4-mini']
 }
 
@@ -35,6 +36,7 @@ export const PROVIDER_LABELS: Record<string, string> = {
   custom: 'Custom (OpenAI-compatible)',
   zai: 'Z.ai — GLM Coding Plan',
   'claude-oauth': 'Claude Pro / Max (sign in)',
+  'gemini-web': 'Gemini Web (no key needed)',
   'chatgpt-oauth': 'ChatGPT Plus / Pro (sign in)'
 }
 

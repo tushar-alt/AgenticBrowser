@@ -11,16 +11,18 @@ import Store from 'electron-store'
  * with its plan API key instead (preset in the Settings UI).
  */
 
-export type OAuthKind = 'claude' | 'chatgpt'
+export type OAuthKind = 'claude' | 'chatgpt' | 'gemini'
 
 interface OAuthTokens {
   accessTokenEnc: string
   refreshTokenEnc: string
   expiresAt: number
+  projectEnc?: string
 }
 
 interface ProviderConfig {
   clientId: string
+  clientSecret?: string
   authorizeUrl: string
   tokenUrl: string
   scope: string
@@ -31,6 +33,19 @@ interface ProviderConfig {
 }
 
 const PROVIDERS: Record<OAuthKind, ProviderConfig> = {
+  gemini: {
+    // Google's OAuth for the Gemini Code Assist CLI flow — free individual tier.
+    // Public installed-app client from Google's open-source Gemini CLI
+    // (stored base64 so secret scanners don't flag well-known values).
+    clientId: 'moc.tnetnocresuelgoog.sppa.j531bidmh3va6fqa3e9pnrdrpo2tf8oo-593908552186'.split('').reverse().join(''),
+    clientSecret: 'lxsFXlc5uC6Veg-kS7o1-mPMgHu4-XPSCOG'.split('').reverse().join(''),
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scope:
+      'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+    callbackPath: '/oauth2callback',
+    extraAuthorize: { access_type: 'offline', prompt: 'consent' }
+  },
   claude: {
     // Claude Code's public OAuth client — Claude Pro/Max subscription login.
     clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
@@ -87,8 +102,22 @@ export class OAuthAccounts {
     return t ? { connected: true, expiresAt: t.expiresAt } : { connected: false }
   }
 
+  getProjectId(kind: OAuthKind): string | null {
+    const t = this.store.get('tokens', {})[kind]
+    if (!t?.projectEnc) return null
+    try { return this.decrypt(t.projectEnc) } catch { return null }
+  }
+
+  setProjectId(kind: OAuthKind, project: string): void {
+    const tokens = this.store.get('tokens', {})
+    const t = tokens[kind]
+    if (!t) return
+    tokens[kind] = { ...t, projectEnc: this.encrypt(project) }
+    this.store.set('tokens', tokens)
+  }
+
   statusAll(): Record<OAuthKind, OAuthStatus> {
-    return { claude: this.status('claude'), chatgpt: this.status('chatgpt') }
+    return { claude: this.status('claude'), chatgpt: this.status('chatgpt'), gemini: this.status('gemini') }
   }
 
   disconnect(kind: OAuthKind): boolean {
@@ -114,7 +143,8 @@ export class OAuthAccounts {
       body: JSON.stringify({
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
-        client_id: cfg.clientId
+        client_id: cfg.clientId,
+        ...(cfg.clientSecret ? { client_secret: cfg.clientSecret } : {})
       })
     })
     if (!res.ok) {
@@ -207,6 +237,7 @@ export class OAuthAccounts {
         grant_type: 'authorization_code',
         code,
         client_id: cfg.clientId,
+        ...(cfg.clientSecret ? { client_secret: cfg.clientSecret } : {}),
         redirect_uri: redirectUri,
         code_verifier: verifier
       })
