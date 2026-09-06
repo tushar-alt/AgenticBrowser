@@ -12,6 +12,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { FindInPage } from './components/FindInPage/FindInPage'
 import { HistoryPanel } from './components/History/HistoryPanel'
 import { BookmarksPanel } from './components/Bookmarks/BookmarksPanel'
+import { DownloadsPanel } from './components/Downloads/DownloadsPanel'
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import { ASSISTANT_PANEL_WIDTH } from '@shared/constants'
 
@@ -22,6 +23,7 @@ export default function App(): React.JSX.Element {
   const [showFindInPage, setShowFindInPage] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showBookmarks, setShowBookmarks] = useState(false)
+  const [showDownloads, setShowDownloads] = useState(false)
   const [addressFocusSignal, setAddressFocusSignal] = useState(0)
 
   const tabs = useTabStore((s) => s.tabs)
@@ -45,7 +47,7 @@ export default function App(): React.JSX.Element {
   // view, so the page steps aside while one is open. Find-in-page stays
   // exempt: its match highlights live in the page itself.
   useEffect(() => {
-    const overlayOpen = showCommandPalette || showHistory || showBookmarks || settingsOpen
+    const overlayOpen = showCommandPalette || showHistory || showBookmarks || showDownloads || settingsOpen
     window.api?.layout?.setOverlay(overlayOpen).catch(() => {})
   }, [showCommandPalette, showHistory, showBookmarks, settingsOpen])
 
@@ -138,9 +140,15 @@ export default function App(): React.JSX.Element {
       case 'mod+h':
         setShowHistory((prev) => !prev)
         break
+      case 'mod+j':
+        setShowDownloads((prev) => !prev)
+        break
       case 'mod+l':
         setShowCommandPalette(false)
         setAddressFocusSignal((n) => n + 1)
+        break
+      case 'mod+shift+r':
+        window.api?.reader?.toggle?.()
         break
     }
   }
@@ -149,7 +157,7 @@ export default function App(): React.JSX.Element {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
         const key = e.key.toLowerCase()
-        if (key === 'k' || key === 'b' || key === 'f' || key === 'h') {
+        if (key === 'k' || key === 'b' || key === 'f' || key === 'h' || key === 'j' || key === 'r') {
           e.preventDefault()
           runShortcut(e.shiftKey ? `mod+shift+${key}` : `mod+${key}`)
           return
@@ -221,6 +229,11 @@ export default function App(): React.JSX.Element {
           isOpen={showBookmarks}
           onClose={() => setShowBookmarks(false)}
           onNavigate={handleNavigate}
+        />
+
+        <DownloadsPanel
+          isOpen={showDownloads}
+          onClose={() => setShowDownloads(false)}
         />
 
         <SettingsPanel />

@@ -26,6 +26,7 @@ export interface TabInfo {
   isNewTab: boolean
   canGoBack: boolean
   canGoForward: boolean
+  incognito?: boolean
 }
 
 export type AgentStatus = 'idle' | 'planning' | 'running' | 'paused' | 'completed' | 'failed' | 'stopped'
@@ -216,6 +217,15 @@ export const IPC_CHANNELS = {
   BOOKMARK_GET: 'bookmark:get',
   BOOKMARK_IS_BOOKMARKED: 'bookmark:is-bookmarked',
 
+  // Downloads
+  DOWNLOAD_LIST: 'download:list',
+  DOWNLOAD_UPDATE: 'download:update',
+  DOWNLOAD_CANCEL: 'download:cancel',
+  DOWNLOAD_CLEAR: 'download:clear',
+
+  // Reader Mode
+  READER_TOGGLE: 'reader:toggle',
+
   // Find in Page
   FIND_IN_PAGE: 'find:in-page',
   FIND_NEXT: 'find:next',
@@ -283,6 +293,17 @@ export interface Bookmark {
   favicon: string
   timestamp: number
   folder?: string
+}
+
+export interface DownloadItem {
+  id: string
+  filename: string
+  url: string
+  status: 'downloading' | 'completed' | 'cancelled' | 'interrupted'
+  progress: number
+  totalBytes: number
+  receivedBytes: number
+  startTime: number
 }
 
 export interface Shortcut {

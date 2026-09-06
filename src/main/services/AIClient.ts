@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import OpenAI from 'openai'
 import Anthropic from '@anthropic-ai/sdk'
 import axios from 'axios'
@@ -1193,7 +1194,7 @@ export class AIClient {
     inner[30] = [4]
     inner[41] = [2]
     inner[53] = 0
-    inner[59] = require('crypto').randomUUID()
+    inner[59] = crypto.randomUUID()
     inner[79] = chosen.mode
 
     const body = 'f.req=' + encodeURIComponent(JSON.stringify([null, JSON.stringify(inner)]))

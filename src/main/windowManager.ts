@@ -1,4 +1,4 @@
-import { BaseWindow, WebContentsView, nativeTheme } from 'electron'
+import { BaseWindow, WebContentsView, nativeTheme, session } from 'electron'
 import path from 'path'
 import Store from 'electron-store'
 import { TabManager } from './tabManager'
@@ -56,6 +56,33 @@ export function createMainWindow(): BaseWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true
+    }
+  })
+
+  // Content Security Policy for the renderer — restricts script/connect sources
+  // to self + localhost (for AI provider APIs and MCP server).
+  const CSP = [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' http://localhost:* https://localhost:* ws://localhost:*",
+    "child-src 'self' blob:",
+    "worker-src 'self' blob:",
+    "form-action 'self'"
+  ].join('; ')
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (details.url.startsWith('http://localhost:') || details.url.startsWith('https://localhost:')) {
+      callback({ responseHeaders: { ...details.responseHeaders } })
+    } else {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [CSP]
+        }
+      })
     }
   })
 

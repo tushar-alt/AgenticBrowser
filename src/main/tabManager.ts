@@ -1,7 +1,7 @@
-import { app, BaseWindow, dialog, session as electronSession, WebContentsView, type Input, type Session } from 'electron'
+import { app, BaseWindow, dialog, Menu, session as electronSession, WebContentsView, type Input, type Session } from 'electron'
 import crypto from 'crypto'
 import path from 'path'
-import { TabInfo, NEW_TAB_URL } from '@shared/types'
+import { TabInfo, NEW_TAB_URL, DownloadItem } from '@shared/types'
 import { CHROME_HEIGHT, buildSearchUrl } from '@shared/constants'
 import { getSettings } from './services/AppSettingsStore'
 import { PasswordVault } from './services/PasswordVault'
@@ -11,7 +11,7 @@ function normalizeShortcut(input: Input): string | null {
   const mod = input.control || input.meta
   if (!mod) return null
   const key = input.key.toLowerCase()
-  if (!['k', 'b', 'f', 'h', 'l', 't', 'w'].includes(key)) return null
+  if (!['k', 'b', 'f', 'h', 'l', 't', 'w', 'j', 'r'].includes(key)) return null
   const parts = ['mod']
   if (input.shift) parts.push('shift')
   parts.push(key)
@@ -91,6 +91,8 @@ export class TabManager {
   private overlayActive: boolean = false
   private onTabUpdate: ((tabs: TabInfo[], activeId: string | null) => void) | null = null
   private onShortcut: ((combo: string) => void) | null = null
+  private onDownloadUpdate: ((downloads: DownloadItem[]) => void) | null = null
+  private downloads: DownloadItem[] = []
   private vault = new PasswordVault()
   private configuredSessions = new WeakSet<Session>()
 
@@ -100,6 +102,14 @@ export class TabManager {
 
   setTabUpdateCallback(cb: (tabs: TabInfo[], activeId: string | null) => void): void {
     this.onTabUpdate = cb
+  }
+
+  setDownloadUpdateCallback(cb: (downloads: DownloadItem[]) => void): void {
+    this.onDownloadUpdate = cb
+  }
+
+  getDownloads(): DownloadItem[] {
+    return [...this.downloads]
   }
 
   /**
@@ -131,14 +141,13 @@ export class TabManager {
     if (!active) this.layoutActiveTab()
   }
 
-  createTab(url?: string): string {
+  createTab(url?: string, incognito = false): string {
     const id = crypto.randomUUID()
     const isNewTab = !url
 
-    // ONE shared persistent session for all tabs — Chrome-style cookie/cache
-    // sharing lets Chromium reuse renderer processes and cached resources
-    // instead of paying a full process + storage partition per tab.
-    const partition = 'persist:app'
+    // Incognito tabs use a temporary session that's discarded on close.
+    // Regular tabs share a persistent session for cookie/cache sharing.
+    const partition = incognito ? `tmp:${id}` : 'persist:app'
     const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
@@ -163,7 +172,8 @@ export class TabManager {
       isLoading: false,
       isNewTab,
       canGoBack: false,
-      canGoForward: false
+      canGoForward: false,
+      incognito
     }
 
     const entry: TabEntry = { id, view, info }
@@ -199,6 +209,83 @@ export class TabManager {
       if (!combo) return
       event.preventDefault()
       this.onShortcut(combo)
+    })
+
+    // Context menu (right-click)
+    view.webContents.on('context-menu', (_event, params) => {
+      const template: Electron.MenuItemConstructorOptions[] = []
+
+      if (params.selectionText) {
+        template.push({ label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' })
+        template.push({ type: 'separator' })
+        template.push({
+          label: 'Ask AI about selection',
+          click: () => {
+            this.onShortcut?.('mod+b')
+          }
+        })
+      }
+
+      if (params.mediaType === 'image' && params.srcURL) {
+        template.push({
+          label: 'Save image as...',
+          click: () => {
+            dialog.showSaveDialog(this.window, {
+              defaultPath: params.srcURL.split('/').pop() || 'image.png'
+            }).then(({ filePath }) => {
+              if (filePath) {
+                view.webContents.downloadURL(params.srcURL)
+              }
+            })
+          }
+        })
+        template.push({
+          label: 'Copy image URL',
+          click: () => {
+            const { clipboard } = require('electron')
+            clipboard.writeText(params.srcURL)
+          }
+        })
+        template.push({ type: 'separator' })
+      }
+
+      if (params.linkURL) {
+        template.push({
+          label: 'Open link in new tab',
+          click: () => this.createTab(params.linkURL)
+        })
+        template.push({
+          label: 'Copy link address',
+          click: () => {
+            const { clipboard } = require('electron')
+            clipboard.writeText(params.linkURL)
+          }
+        })
+        template.push({ type: 'separator' })
+      }
+
+      if (params.isEditable) {
+        template.push({ label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' })
+        template.push({ label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' })
+        template.push({ type: 'separator' })
+        template.push({ label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' })
+        template.push({ label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' })
+        template.push({ label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' })
+        template.push({ type: 'separator' })
+        template.push({ label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' })
+      }
+
+      // Common items
+      template.push({ type: 'separator' })
+      template.push({ label: 'Reload', accelerator: 'CmdOrCtrl+R', role: 'reload' })
+      template.push({ label: 'Back', accelerator: 'Alt+Left', click: () => view.webContents.goBack() })
+      template.push({ label: 'Forward', accelerator: 'Alt+Right', click: () => view.webContents.goForward() })
+      template.push({ type: 'separator' })
+      template.push({ label: 'Inspect Element', accelerator: 'CmdOrCtrl+Shift+I', role: 'toggleDevTools' })
+
+      if (template.length > 0) {
+        Menu.buildFromTemplate(template).popup({ window: this.window })
+      }
     })
 
     view.webContents.on('did-start-navigation', (_event, url, _isInPlace, isMainFrame) => {
@@ -252,9 +339,12 @@ export class TabManager {
         view.webContents.setZoomFactor(settings.defaultZoom)
       } catch { /* detached */ }
       if (settings.autoSignin) {
-        const creds = this.vault.findForOrigin(view.webContents.getURL())
-        if (creds) {
-          void view.webContents.executeJavaScript(autofillScript(creds), true).catch(() => {})
+        const url = view.webContents.getURL()
+        if (url.startsWith('https://')) {
+          const creds = this.vault.findForOrigin(url)
+          if (creds) {
+            void view.webContents.executeJavaScript(autofillScript(creds), true).catch(() => {})
+          }
         }
       }
       if (settings.savePasswords) {
@@ -493,6 +583,21 @@ export class TabManager {
 
     ses.on('will-download', (_event, item) => {
       const settings = getSettings()
+      const downloadId = crypto.randomUUID()
+      const download: DownloadItem = {
+        id: downloadId,
+        filename: item.getFilename(),
+        url: item.getURL(),
+        status: 'downloading',
+        progress: 0,
+        totalBytes: item.getTotalBytes(),
+        receivedBytes: 0,
+        startTime: Date.now()
+      }
+      this.downloads.unshift(download)
+      if (this.downloads.length > 100) this.downloads.length = 100
+      this.emitDownloads()
+
       try {
         if (settings.askDownloadLocation) {
           const res = dialog.showSaveDialogSync(this.window, {
@@ -500,6 +605,8 @@ export class TabManager {
           })
           if (!res) {
             item.cancel()
+            download.status = 'cancelled'
+            this.emitDownloads()
             return
           }
           item.setSavePath(res)
@@ -507,6 +614,26 @@ export class TabManager {
           item.setSavePath(path.join(settings.downloadPath || app.getPath('downloads'), item.getFilename()))
         }
       } catch { /* fall back to Chromium default handling */ }
+
+      item.on('updated', (_event, state) => {
+        if (state === 'progressing') {
+          download.receivedBytes = item.getReceivedBytes()
+          download.totalBytes = item.getTotalBytes()
+          download.progress = download.totalBytes > 0 ? download.receivedBytes / download.totalBytes : 0
+          this.emitDownloads()
+        }
+      })
+
+      item.once('done', (_event, state) => {
+        if (state === 'completed') {
+          download.status = 'completed'
+          download.progress = 1
+        } else {
+          download.status = state === 'cancelled' ? 'cancelled' : 'interrupted'
+        }
+        download.receivedBytes = item.getReceivedBytes()
+        this.emitDownloads()
+      })
     })
 
     ses.webRequest.onBeforeSendHeaders((details, callback) => {
@@ -544,6 +671,12 @@ export class TabManager {
   private emitUpdate(): void {
     if (this.onTabUpdate) {
       this.onTabUpdate(this.getTabList(), this.activeTabId)
+    }
+  }
+
+  private emitDownloads(): void {
+    if (this.onDownloadUpdate) {
+      this.onDownloadUpdate([...this.downloads])
     }
   }
 }

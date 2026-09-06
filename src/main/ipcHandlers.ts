@@ -43,8 +43,8 @@ export function setupIPCHandlers(): void {
     sendToRenderer(IPC_CHANNELS.TAB_UPDATE, tabs, activeId)
   })
 
-  ipcMain.handle(IPC_CHANNELS.TAB_CREATE, (_event, url?: string) => {
-    return tabManager.createTab(url)
+  ipcMain.handle(IPC_CHANNELS.TAB_CREATE, (_event, url?: string, incognito?: boolean) => {
+    return tabManager.createTab(url, incognito)
   })
 
   ipcMain.handle(IPC_CHANNELS.TAB_CLOSE, (_event, tabId: string) => {
@@ -390,6 +390,173 @@ export function setupIPCHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.BOOKMARK_IS_BOOKMARKED, (_event, url: string) => {
     const bookmarks = bookmarkStore.get('bookmarks', [])
     return bookmarks.some((b) => b.url === url)
+  })
+
+  // ── Downloads ────────────────────────────────────────────────────────────
+
+  ipcMain.handle(IPC_CHANNELS.DOWNLOAD_LIST, () => {
+    return tabManager.getDownloads()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.DOWNLOAD_CLEAR, () => {
+    tabManager['downloads'] = []
+    tabManager['emitDownloads']()
+    return true
+  })
+
+  // Set up download updates forwarding
+  tabManager.setDownloadUpdateCallback((downloads) => {
+    sendToRenderer(IPC_CHANNELS.DOWNLOAD_UPDATE, downloads)
+  })
+
+  // ── Reader Mode ──────────────────────────────────────────────────────────
+
+  ipcMain.handle(IPC_CHANNELS.READER_TOGGLE, async () => {
+    const webContents = tabManager.getActiveTabWebContents()
+    if (!webContents) return false
+
+    // Check if reader mode is already active
+    const isReaderActive = await webContents.executeJavaScript(`
+      !!document.getElementById('ab-reader-overlay')
+    `).catch(() => false)
+
+    if (isReaderActive) {
+      // Remove reader mode
+      await webContents.executeJavaScript(`
+        const overlay = document.getElementById('ab-reader-overlay');
+        if (overlay) overlay.remove();
+        document.body.style.overflow = '';
+      `).catch(() => {})
+      return false
+    }
+
+    // Inject reader mode
+    await webContents.executeJavaScript(`
+      (() => {
+        // Extract article content
+        const article = document.querySelector('article')
+          || document.querySelector('main')
+          || document.querySelector('[role="main"]')
+          || document.querySelector('.post-content, .article-content, .entry-content, .content');
+
+        let content = '';
+        let title = document.title || '';
+
+        if (article) {
+          content = article.innerHTML;
+          const h1 = article.querySelector('h1');
+          if (h1) title = h1.innerText;
+        } else {
+          // Fallback: collect meaningful text blocks
+          const blocks = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, pre');
+          if (blocks.length > 3) {
+            content = Array.from(blocks)
+              .map(el => {
+                const tag = el.tagName.toLowerCase();
+                if (tag.startsWith('h')) return '<' + tag + '>' + el.innerText + '</' + tag + '>';
+                if (tag === 'li') return '<li>' + el.innerText + '</li>';
+                if (tag === 'blockquote') return '<blockquote>' + el.innerText + '</blockquote>';
+                if (tag === 'pre') return '<pre>' + el.innerText + '</pre>';
+                return '<p>' + el.innerText + '</p>';
+              })
+              .join('\\n');
+          } else {
+            content = document.body.innerText;
+          }
+        }
+
+        // Create reader overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'ab-reader-overlay';
+        overlay.style.cssText = \`
+          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+          background: #faf8f5; color: #1a1a1a; z-index: 2147483647;
+          overflow-y: auto; padding: 0;
+          font-family: Georgia, 'Times New Roman', serif;
+        \`;
+
+        // Header
+        const header = document.createElement('div');
+        header.style.cssText = \`
+          position: sticky; top: 0; z-index: 10;
+          background: #faf8f5; border-bottom: 1px solid #e5e5e5;
+          padding: 12px 24px; display: flex; justify-content: space-between; align-items: center;
+        \`;
+        header.innerHTML = \`
+          <span style="font-size: 14px; color: #666; font-family: -apple-system, sans-serif;">Reader Mode</span>
+          <button id="ab-reader-close" style="
+            background: none; border: 1px solid #ccc; border-radius: 6px;
+            padding: 6px 12px; cursor: pointer; font-size: 13px; color: #666;
+            font-family: -apple-system, sans-serif;
+          ">Exit Reader</button>
+        \`;
+
+        // Content container
+        const container = document.createElement('div');
+        container.style.cssText = \`
+          max-width: 680px; margin: 0 auto; padding: 40px 24px 80px;
+        \`;
+
+        // Title
+        const titleEl = document.createElement('h1');
+        titleEl.textContent = title;
+        titleEl.style.cssText = \`
+          font-size: 2.2em; line-height: 1.2; margin: 0 0 16px;
+          font-weight: 700; color: #1a1a1a;
+        \`;
+
+        // URL
+        const urlEl = document.createElement('div');
+        urlEl.style.cssText = \`
+          font-size: 13px; color: #888; margin-bottom 32px;
+          font-family: -apple-system, sans-serif;
+        \`;
+        urlEl.textContent = location.hostname;
+
+        // Content
+        const contentEl = document.createElement('div');
+        contentEl.style.cssText = \`
+          font-size: 18px; line-height: 1.8; color: #333;
+        \`;
+        contentEl.innerHTML = content;
+
+        // Style headings in content
+        contentEl.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+          h.style.cssText = 'margin: 1.5em 0 0.5em; font-weight: 600; color: #1a1a1a;';
+        });
+        contentEl.querySelectorAll('p').forEach(p => {
+          p.style.cssText = 'margin: 0 0 1.2em;';
+        });
+        contentEl.querySelectorAll('pre').forEach(pre => {
+          pre.style.cssText = \`
+            background: #f0f0f0; padding: 16px; border-radius: 6px;
+            overflow-x: auto; font-size: 15px; line-height: 1.5;
+          \`;
+        });
+        contentEl.querySelectorAll('blockquote').forEach(bq => {
+          bq.style.cssText = \`
+            border-left: 3px solid #ccc; margin: 1em 0; padding: 0.5em 0 0.5em 1em;
+            color: #555; font-style: italic;
+          \`;
+        });
+
+        container.appendChild(titleEl);
+        container.appendChild(urlEl);
+        container.appendChild(contentEl);
+        overlay.appendChild(header);
+        overlay.appendChild(container);
+        document.body.appendChild(overlay);
+        document.body.style.overflow = 'hidden';
+
+        // Close button
+        document.getElementById('ab-reader-close')?.addEventListener('click', () => {
+          overlay.remove();
+          document.body.style.overflow = '';
+        });
+      })()
+    `).catch(() => {})
+
+    return true
   })
 
   // ── Find in Page ──────────────────────────────────────────────────────────

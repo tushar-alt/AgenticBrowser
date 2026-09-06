@@ -14,6 +14,7 @@ export class MCPServer extends EventEmitter {
   private port: number
   private isRunning: boolean = false
   private token: string = crypto.randomBytes(24).toString('hex')
+  private rateLimiter: Map<string, number[]> = new Map()
 
   constructor(
     cdpController: CDPController,
@@ -169,6 +170,14 @@ export class MCPServer extends EventEmitter {
         return
       }
 
+      // Rate limiting: 30 requests per minute per IP
+      const ip = req.socket.remoteAddress || '127.0.0.1'
+      if (!this.checkRateLimit(ip)) {
+        res.writeHead(429)
+        res.end(JSON.stringify({ error: 'Rate limit exceeded (30 req/min)' }))
+        return
+      }
+
       let body = ''
       req.on('data', (chunk: Buffer) => { body += chunk.toString() })
       req.on('end', async () => {
@@ -200,10 +209,31 @@ export class MCPServer extends EventEmitter {
       this.server!.close(() => {
         this.isRunning = false
         this.server = null
+        this.rateLimiter.clear()
         this.emit('stopped')
         resolve()
       })
     })
+  }
+
+  private checkRateLimit(ip: string): boolean {
+    const now = Date.now()
+    const windowMs = 60_000 // 1 minute
+    const maxRequests = 30
+    const timestamps = this.rateLimiter.get(ip) || []
+    const recent = timestamps.filter((t) => now - t < windowMs)
+    if (recent.length >= maxRequests) return false
+    recent.push(now)
+    this.rateLimiter.set(ip, recent)
+    // Periodic cleanup to prevent memory leak
+    if (this.rateLimiter.size > 1000) {
+      for (const [key, vals] of this.rateLimiter) {
+        const fresh = vals.filter((t) => now - t < windowMs)
+        if (fresh.length === 0) this.rateLimiter.delete(key)
+        else this.rateLimiter.set(key, fresh)
+      }
+    }
+    return true
   }
 
   private async handleRequest(request: { method: string; params?: Record<string, unknown> }): Promise<unknown> {

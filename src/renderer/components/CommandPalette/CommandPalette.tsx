@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Plus, MessageSquare, Bot, Settings, CornerDownLeft, ChevronRight, Clock, Star } from 'lucide-react'
+import { Plus, MessageSquare, Bot, Settings, CornerDownLeft, ChevronRight, Clock, Star, EyeOff, BookOpen } from 'lucide-react'
 import { useTabStore } from '../../store/tabStore'
 import { useAgentStore } from '../../store/agentStore'
 import { useSettingsStore } from '../../store/settingsStore'
@@ -45,6 +45,22 @@ export function CommandPalette({ isOpen, onClose, onToggleChat, onToggleSupervis
       description: 'Open a new browser tab',
       icon: <Plus size={15} />,
       action: () => { createTab(); onClose() },
+      category: 'browser'
+    },
+    {
+      id: 'new-incognito-tab',
+      label: 'New Incognito Tab',
+      description: 'Open a private browsing tab',
+      icon: <EyeOff size={15} />,
+      action: () => { createTab(undefined, true); onClose() },
+      category: 'browser'
+    },
+    {
+      id: 'reader-mode',
+      label: 'Toggle Reader Mode',
+      description: 'Extract article content for clean reading',
+      icon: <BookOpen size={15} />,
+      action: () => { window.api?.reader?.toggle?.(); onClose() },
       category: 'browser'
     },
     ...tabs.map((tab) => ({

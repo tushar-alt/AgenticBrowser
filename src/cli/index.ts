@@ -30,6 +30,7 @@ import {
   type CDPSession
 } from './cdp'
 import { extractionScript, type PageJSON } from '../shared/pageJson'
+import { refToSelector, clickScript, typeScript } from '../shared/agentUtils'
 import { runTask, askPage } from './agent'
 
 interface ParsedArgs {
@@ -323,12 +324,6 @@ async function listTargets(port: number): Promise<Array<{ idx: number; id: strin
   return list.filter((t) => t.type === 'page').map((t, i) => ({ idx: i, id: t.id, title: t.title, url: t.url }))
 }
 
-function refToSelector(ref: string): string {
-  const m = ref.match(/^[eE](\d+)$/)
-  if (!m) return ref
-  return `[data-ab-ref="e${m[1]}"]`
-}
-
 async function getPageJson(session: CDPSession, opts: { textLimit?: number } = {}): Promise<PageJSON> {
   return session.evaluate<PageJSON>(extractionScript({ textLimit: opts.textLimit }))
 }
@@ -337,41 +332,6 @@ async function sliceSelector(session: CDPSession, selector: string, page: PageJS
   const escaped = selector.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
   const html = await session.evaluate<string>(`document.querySelector('${escaped}')?.outerHTML || ''`)
   return { url: page.url, title: page.title, selector, html }
-}
-
-function clickScript(selector: string): string {
-  return `
-    (() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
-      el.scrollIntoView({ behavior: 'instant', block: 'center' });
-      const rect = el.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: cx, clientY: cy }));
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: cx, clientY: cy }));
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
-      return true;
-    })()
-  `
-}
-
-function typeScript(selector: string, value: string): string {
-  const val = JSON.stringify(value)
-  return `
-    (() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
-      el.scrollIntoView({ behavior: 'instant', block: 'center' });
-      el.focus();
-      el.value = '';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.value = ${val};
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()
-  `
 }
 
 main().catch(die)

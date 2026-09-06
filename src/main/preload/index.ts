@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, TabInfo, AppSettings, ChatMessage, AgentTask, AgentAction, PageContext, AIProvider, FindResult, HistoryEntry, Bookmark, Shortcut, Workflow, SavedPasswordMeta } from '@shared/types'
+import { IPC_CHANNELS, TabInfo, AppSettings, ChatMessage, AgentTask, AgentAction, PageContext, AIProvider, FindResult, HistoryEntry, Bookmark, Shortcut, Workflow, SavedPasswordMeta, DownloadItem } from '@shared/types'
 
 const api = {
   tabs: {
-    create: (url?: string): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.TAB_CREATE, url),
+    create: (url?: string, incognito?: boolean): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.TAB_CREATE, url, incognito),
     close: (tabId: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TAB_CLOSE, tabId),
     switch: (tabId: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TAB_SWITCH, tabId),
     navigate: (tabId: string, url: string): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.TAB_NAVIGATE, tabId, url),
@@ -121,7 +121,14 @@ const api = {
   },
 
   downloads: {
-    chooseDir: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_CHOOSE_DOWNLOAD_DIR)
+    chooseDir: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_CHOOSE_DOWNLOAD_DIR),
+    list: (): Promise<DownloadItem[]> => ipcRenderer.invoke(IPC_CHANNELS.DOWNLOAD_LIST),
+    clear: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.DOWNLOAD_CLEAR),
+    onUpdate: (callback: (downloads: DownloadItem[]) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, downloads: DownloadItem[]) => callback(downloads)
+      ipcRenderer.on(IPC_CHANNELS.DOWNLOAD_UPDATE, handler)
+      return () => { ipcRenderer.removeListener(IPC_CHANNELS.DOWNLOAD_UPDATE, handler) }
+    }
   },
 
   oauth: {
@@ -131,6 +138,10 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.OAUTH_DISCONNECT, kind),
     status: (): Promise<Record<string, { connected: boolean; expiresAt?: number }>> =>
       ipcRenderer.invoke(IPC_CHANNELS.OAUTH_STATUS)
+  },
+
+  reader: {
+    toggle: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.READER_TOGGLE)
   },
 
   find: {

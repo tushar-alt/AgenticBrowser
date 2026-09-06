@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, X, EyeOff } from 'lucide-react'
 import { useTabStore } from '../../store/tabStore'
 
 export function TabBar(): React.JSX.Element {
@@ -94,6 +94,12 @@ export function TabBar(): React.JSX.Element {
               {tab.isLoading ? '… ' : ''}
               {tab.isNewTab ? 'New Tab' : tab.title || 'New Tab'}
             </span>
+
+            {tab.incognito && (
+              <span title="Incognito">
+                <EyeOff size={10} className="mr-1 text-zinc-500 flex-shrink-0" />
+              </span>
+            )}
 
             <button
               onClick={(e) => handleClose(e, tab.id)}

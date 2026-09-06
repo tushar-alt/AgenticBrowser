@@ -95,7 +95,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const result = await window.api.settings.testKey()
       set({ testResult: result })
     } catch (error) {
-      set({ testResult: { success: false, message: String(error) } })
+      const msg = error instanceof Error ? error.message : String(error)
+      set({ testResult: { success: false, message: msg } })
     }
   },
 

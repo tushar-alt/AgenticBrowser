@@ -6,6 +6,7 @@ import { TabManager } from '../tabManager'
 import { AgentTask, AgentAction, CDPAction, ChatMessage } from '@shared/types'
 import { extractionScript } from '@shared/pageJson'
 import { buildSearchUrl, SOFTWARE_SITES } from '@shared/constants'
+import { refToSelector, formatSnapshot, type StructuredPage } from '@shared/agentUtils'
 import { getSettings, updateSettings } from './AppSettingsStore'
 import crypto from 'crypto'
 import { WebContents } from 'electron'
@@ -487,7 +488,7 @@ Return exactly one JSON action object.`
         // JSON mode: constrains local/no-tool-calling models (Ollama) to emit
         // parseable action objects — the tool-calling bridge.
         this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT, undefined, { jsonMode: true }),
-        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 45000))
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 240000))
       ]).catch((e) => {
         throw new Error(
           e instanceof Error && e.message.includes('timed out')
@@ -516,7 +517,7 @@ Return exactly one JSON action object.`
           try {
             const retryResp = await Promise.race([
               this.aiClient.sendMessage(messages, ACT_SYSTEM_PROMPT, undefined, { jsonMode: true }),
-              new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 45000))
+              new Promise<string>((_, reject) => setTimeout(() => reject(new Error('AI response timed out')), 240000))
             ])
             parsed = this.parseAction(retryResp)
           } catch { /* timed out — give up on this turn */ }
@@ -684,7 +685,7 @@ Return exactly one JSON action object.`
   private async extractPageSnapshot(webContents: WebContents): Promise<string> {
     try {
       const page = (await webContents.executeJavaScript(
-        extractionScript({ textLimit: 1000 })
+        extractionScript({ textLimit: 400 })
       )) as StructuredPage | null
       this.lastPageJson = page
       return formatSnapshot(page)
@@ -916,46 +917,4 @@ interface ParsedAction {
   ms?: number
   summary?: string
   description?: string
-}
-
-interface StructuredPage {
-  url: string
-  title: string
-  links: Array<{ ref: string; text: string; href: string }>
-  forms: Array<{ ref: string; action: string; method: string; fields: Array<{ name: string; type: string; placeholder: string; required: boolean; value: string }> }>
-  interactive: Array<{ ref: string; tag: string; type: string; text: string; placeholder: string }>
-  text: string
-}
-
-function refToSelector(ref: string): string {
-  const m = ref.match(/^[eE](\d+)$/)
-  if (!m) return ref
-  return `[data-ab-ref="e${m[1]}"]`
-}
-
-/** Flat BrowserOS-style snapshot: one line per interactive element with its ref. */
-function formatSnapshot(page: StructuredPage | null): string {
-  if (!page) return '(page could not be read)'
-  const lines: string[] = []
-  lines.push(`URL: ${page.url} | Title: ${page.title}`)
-  if (page.forms.length > 0) {
-    for (const f of page.forms.slice(0, 5)) {
-      lines.push(
-        `form [${f.ref}] method=${f.method} fields: ` +
-          f.fields.map((fl) => `${fl.type}${fl.name ? ` name=${fl.name}` : ''}${fl.required ? ' (required)' : ''}`).join(', ')
-      )
-    }
-  }
-  for (const el of page.interactive.slice(0, 40)) {
-    lines.push(`[${el.ref}] ${el.tag}${el.type ? ` type=${el.type}` : ''} "${el.text || el.placeholder || ''}"`)
-  }
-  for (const l of page.links.slice(0, 40)) {
-    lines.push(`[${l.ref}] link "${l.text}" href=${l.href}`)
-  }
-  if (page.text) {
-    lines.push('')
-    lines.push('Page text (truncated):')
-    lines.push(page.text.substring(0, 800))
-  }
-  return lines.join('\n')
 }

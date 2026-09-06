@@ -15,6 +15,7 @@ import path from 'path'
 import { buildSearchUrl, SOFTWARE_SITES } from '../shared/constants'
 import { CDPSession, waitLoad } from './cdp'
 import { extractionScript, summarizePageJson, type PageJSON } from '../shared/pageJson'
+import { refToSelector } from '../shared/agentUtils'
 
 export interface AgentStep {
   step: number
@@ -285,13 +286,6 @@ function normalizeAction(obj: { thought?: string; action?: Action }, raw: string
   }
   if (!action || !action.type) throw new Error('Agent JSON missing action: ' + raw.substring(0, 200))
   return { thought: obj.thought || '', action }
-}
-
-/** Normalize a ref like "e12" to the attribute selector used by the extractor. */
-function refToSelector(ref: string): string {
-  const m = ref.match(/^[eE](\d+)$/)
-  if (!m) return ref
-  return `[data-ab-ref="e${m[1]}"]`
 }
 
 async function getPageJson(session: CDPSession, opts: { textLimit?: number } = {}): Promise<PageJSON> {

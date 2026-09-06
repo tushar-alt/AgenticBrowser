@@ -6,7 +6,7 @@ interface TabStore {
   activeTabId: string | null
   setTabs: (tabs: TabInfo[], activeId: string | null) => void
   getActiveTab: () => TabInfo | null
-  createTab: (url?: string) => Promise<void>
+  createTab: (url?: string, incognito?: boolean) => Promise<void>
   closeTab: (tabId: string) => Promise<void>
   switchTab: (tabId: string) => Promise<void>
   navigateTab: (tabId: string, url: string) => Promise<void>
@@ -28,8 +28,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
     return tabs.find((t) => t.id === activeTabId) || null
   },
 
-  createTab: async (url?: string) => {
-    await window.api?.tabs?.create(url)
+  createTab: async (url?: string, incognito?: boolean) => {
+    await window.api?.tabs?.create(url, incognito)
   },
 
   closeTab: async (tabId: string) => {
