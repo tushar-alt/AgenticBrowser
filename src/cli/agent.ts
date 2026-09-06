@@ -12,7 +12,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { buildSearchUrl } from '../shared/constants'
+import { buildSearchUrl, SOFTWARE_SITES } from '../shared/constants'
 import { CDPSession, waitLoad } from './cdp'
 import { extractionScript, summarizePageJson, type PageJSON } from '../shared/pageJson'
 
@@ -470,6 +470,78 @@ async function runDeterministicFlow(
         push('download', 'navigate', 'saved ' + file + ' (' + (buf.length / 1024).toFixed(0) + ' KB)')
         return { summary: 'Downloaded ' + base + ' as "' + file + '" (' + (buf.length / 1024).toFixed(0) + ' KB).', steps }
       } catch { /* try next branch */ }
+    }
+  }
+
+  // ---- SOFTWARE DOWNLOAD (official site, verified on disk) ----
+  if (/download/i.test(low)) {
+    const site = SOFTWARE_SITES.find(
+      (s) => low.includes(s.key) || s.aliases.some((a) => low.includes(a))
+    )
+    if (site) {
+      let dir: string | null = null
+      const driveM = task.match(/(?:in|to|on)\s+(?:the\s+)?([a-z])(?::\\|:?\s*drive)\b/i)
+      if (driveM) {
+        const dl = driveM[1].toUpperCase() + ':\\'
+        if (!fs.existsSync(dl)) {
+          push('verify drive', 'download', 'drive ' + dl + ' does not exist')
+          return { summary: 'Download failed: drive ' + dl + ' does not exist on this machine.', steps }
+        }
+        dir = dl
+      }
+      if (!dir) dir = process.env.AGENTIC_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads')
+
+      push('official page', 'navigate', site.page)
+      await executeAction(session, { type: 'navigate', url: site.page })
+      await new Promise((r) => setTimeout(r, 3500))
+      const hrefs = await session.evaluate<string[]>(
+        "Array.from(document.querySelectorAll('a[href]')).map(function(a){return a.href})"
+      )
+      const url = (hrefs || []).find((h) => site.hrefTokens.every((t) => h.toLowerCase().includes(t)))
+      if (!url) {
+        push('resolve link', 'extract', 'no official link found')
+        return { summary: 'Download failed: could not find the official ' + site.name + ' download link on ' + site.page + '.', steps }
+      }
+
+      // Chromium's network stack handles Google redirect chains that break
+      // node fetch — let headless Chrome download it and verify on disk.
+      push('browser download', 'download', url)
+      try {
+        await session.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir })
+      } catch {
+        await session.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dir }).catch(() => {})
+      }
+      const before = new Set(fs.readdirSync(dir))
+      await session.send('Page.navigate', { url }, 60000)
+
+      let file = ''
+      let size = 0
+      const deadline = Date.now() + 300000
+      let stable = 0
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2500))
+        const entries = fs.readdirSync(dir).filter((f) => !before.has(f) && !f.endsWith('.crdownload') && !f.endsWith('.part'))
+        if (entries.length > 0) {
+          file = path.join(dir, entries[0])
+          let sz = 0
+          try { sz = fs.statSync(file).size } catch { continue }
+          const growing = sz > size
+          size = sz
+          if (sz > 0 && !growing) {
+            stable++
+            if (stable >= 2) break
+          } else {
+            stable = 0
+          }
+        }
+      }
+
+      if (!file || !fs.existsSync(file) || size < 1024) {
+        return { summary: 'Download failed: no completed file appeared in ' + dir + ' within the time limit.', steps }
+      }
+      const mb = (size / 1024 / 1024).toFixed(1)
+      push('verify on disk', 'verify', file + ' (' + mb + ' MB)')
+      return { summary: 'Downloaded the latest ' + site.name + ' to ' + file + ' (' + mb + ' MB) — verified on disk.', steps }
     }
   }
 

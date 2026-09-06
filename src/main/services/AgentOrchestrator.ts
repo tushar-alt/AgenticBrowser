@@ -5,7 +5,8 @@ import { ContentExtractor } from './ContentExtractor'
 import { TabManager } from '../tabManager'
 import { AgentTask, AgentAction, CDPAction, ChatMessage } from '@shared/types'
 import { extractionScript } from '@shared/pageJson'
-import { buildSearchUrl } from '@shared/constants'
+import { buildSearchUrl, SOFTWARE_SITES } from '@shared/constants'
+import { getSettings, updateSettings } from './AppSettingsStore'
 import crypto from 'crypto'
 import { WebContents } from 'electron'
 
@@ -172,6 +173,98 @@ export class AgentOrchestrator extends EventEmitter {
         }
       }
       return null
+    }
+
+    // ---- SOFTWARE DOWNLOAD (official site, verified on disk) ----
+    if (/download/i.test(low)) {
+      const site = SOFTWARE_SITES.find(
+        (s) => low.includes(s.key) || s.aliases.some((a) => low.includes(a))
+      )
+      if (site) {
+        // resolve target drive from the task ("in f drive", "to d:")
+        const fsMod = await import('fs')
+        const pathMod = await import('path')
+        let dir: string | null = null
+        // "in f drive", "to d:", "on e: drive" — colon optional when the word drive follows
+        const driveM = goal.match(/(?:in|to|on)\s+(?:the\s+)?([a-z])(?::\\|:?\s*drive)\b/i)
+        if (driveM) {
+          const dl = driveM[1].toUpperCase() + ':\\'
+          if (!fsMod.existsSync(dl)) {
+            return `Download failed: drive ${dl} does not exist on this machine.`
+          }
+          dir = dl
+        }
+        if (!dir) dir = this.downloadDir || pathMod.join(process.env.USERPROFILE || 'C:', 'Downloads')
+
+        this.log(`🎯 official download flow: ${site.name}`)
+        const activeTab = this.tabManager.getActiveTab()
+        if (!activeTab) return null
+
+        // Chromium's network stack handles Google's redirect chains that break
+        // Node fetch — route the download through the browser's own handler.
+        // will-download saves to settings.downloadPath, so point it at the
+        // requested drive first.
+        if (dir !== (getSettings().downloadPath || '')) {
+          updateSettings({ downloadPath: dir })
+          this.downloadDir = dir
+        }
+
+        this.tabManager.navigateTab(activeTab.id, site.page)
+        await new Promise((r) => setTimeout(r, 3500))
+        const wc = activeTab.view.webContents
+        const hrefs = (await wc
+          .executeJavaScript(
+            "Array.from(document.querySelectorAll('a[href]')).map(function(a){return a.href})",
+            true
+          )
+          .catch(() => [])) as string[]
+        const url = (hrefs || []).find((h) =>
+          site.hrefTokens.every((t) => h.toLowerCase().includes(t))
+        )
+        if (!url) {
+          return `Download failed: could not find the official ${site.name} download link on ${site.page}.`
+        }
+
+        // snapshot the dir so we can identify the new file afterwards
+        const before = new Set(fsMod.readdirSync(dir))
+        this.log(`⬇ browser downloading: ${url}`)
+        await wc
+          .executeJavaScript(
+            `(() => { const a = document.querySelector('a[href="' + ${JSON.stringify(url)} + '"]'); if (!a) return false; a.click(); return true })()`,
+            true
+          )
+          .catch(() => {})
+
+        // poll for the new file; wait for its size to stabilize (download done)
+        let file = ''
+        let size = 0
+        const deadline = Date.now() + 300000 // 5 min for big installers
+        let stable = 0
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2500))
+          const entries = fsMod.readdirSync(dir).filter((f) => !before.has(f) && !f.endsWith('.crdownload') && !f.endsWith('.part'))
+          if (entries.length > 0) {
+            file = pathMod.join(dir, entries[0])
+            let sz = 0
+            try { sz = fsMod.statSync(file).size } catch { continue }
+            const growing = sz > size
+            size = sz
+            if (sz > 0 && !growing) {
+              stable++
+              if (stable >= 2) break
+            } else {
+              stable = 0
+            }
+          }
+        }
+
+        // POSTCONDITION: the file must really exist with real bytes
+        if (!file || !fsMod.existsSync(file) || size < 1024) {
+          return `Download failed: no completed file appeared in ${dir} within the time limit. The download either never started or was interrupted.`
+        }
+        const mb = (size / 1024 / 1024).toFixed(1)
+        return `Downloaded the latest ${site.name} to ${file} (${mb} MB) — verified on disk.`
+      }
     }
 
     // ---- SEARCH ----

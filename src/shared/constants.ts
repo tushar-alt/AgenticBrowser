@@ -53,3 +53,53 @@ export function buildSearchUrl(engine: string, customUrl: string, query: string)
       : SEARCH_ENGINES.find((e) => e.id === engine)?.url || SEARCH_ENGINES[0].url
   return template.replace('%s', encodeURIComponent(query))
 }
+
+/** Official download sources for popular software — used by the deterministic
+ * download flow so "download X" completes with ANY model. hrefTokens must all
+ * appear (lowercase) in the download link for it to be trusted. */
+export interface SoftwareSite {
+  key: string
+  name: string
+  aliases: string[]
+  page: string
+  hrefTokens: string[]
+  fallbackName: string
+}
+
+export const SOFTWARE_SITES: SoftwareSite[] = [
+  {
+    key: 'android studio', name: 'Android Studio', aliases: ['android studio'],
+    page: 'https://developer.android.com/studio',
+    hrefTokens: ['android/studio', '.exe'], fallbackName: 'android-studio-installer.exe'
+  },
+  {
+    key: 'visual studio code', name: 'Visual Studio Code', aliases: ['visual studio code', 'vscode', 'vs code'],
+    page: 'https://code.visualstudio.com/download',
+    hrefTokens: ['vscode.download.prss.microsoft.com', '.exe'], fallbackName: 'vscode-installer.exe'
+  },
+  {
+    key: 'node.js', name: 'Node.js', aliases: ['nodejs', 'node.js', 'node '],
+    page: 'https://nodejs.org/en/download',
+    hrefTokens: ['nodejs.org/dist', 'x64.msi'], fallbackName: 'node-installer.msi'
+  },
+  {
+    key: 'python', name: 'Python', aliases: ['python'],
+    page: 'https://www.python.org/downloads/',
+    hrefTokens: ['python.org/ftp', '.exe'], fallbackName: 'python-installer.exe'
+  },
+  {
+    key: 'firefox', name: 'Firefox', aliases: ['firefox'],
+    page: 'https://www.mozilla.org/en-US/firefox/new/',
+    hrefTokens: ['download.mozilla.org'], fallbackName: 'firefox-installer.exe'
+  },
+  {
+    key: '7-zip', name: '7-Zip', aliases: ['7-zip', '7zip'],
+    page: 'https://www.7-zip.org/download.html',
+    hrefTokens: ['7-zip.org/a', 'x64.exe'], fallbackName: '7zip-installer.exe'
+  },
+  {
+    key: 'obs studio', name: 'OBS Studio', aliases: ['obs studio', 'obsproject'],
+    page: 'https://obsproject.com/download',
+    hrefTokens: ['obsproject.com/downloads', '.exe'], fallbackName: 'obs-installer.exe'
+  }
+]
